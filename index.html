@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>4th &amp; Cold Golf Classic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" type="image/png" href="logo-dark.png">
+</head>
+<body>
+
+<!-- Loading screen -->
+<div id="loader" class="loader">
+  <img src="logo-white.png" alt="4th & Cold" class="loader-logo">
+  <div class="loader-bar"><div class="loader-fill"></div></div>
+</div>
+
+<!-- Email gate -->
+<div id="gate" class="gate hidden">
+  <div class="gate-card">
+    <img src="logo-white.png" alt="4th & Cold" class="gate-logo">
+    <h1 class="gate-title">Golf Classic</h1>
+    <p class="gate-sub" id="gateBlurb">2-Man Scramble &middot; Mustang Creek Country Club</p>
+
+    <div id="gateStep1">
+      <label class="field-label" for="gateEmail">Your email</label>
+      <input type="email" id="gateEmail" class="field" placeholder="you@example.com" autocomplete="email" inputmode="email">
+      <button id="gateContinue" class="btn btn-primary btn-block">Continue</button>
+      <p class="gate-hint">Been here before? Same email gets you right back in.</p>
+    </div>
+
+    <div id="gateStep2" class="hidden">
+      <p class="gate-newbie">Looks like you're new — confirm your email and add your name.</p>
+      <label class="field-label" for="gateEmail2">Re-enter your email</label>
+      <input type="email" id="gateEmail2" class="field" placeholder="Type it again to confirm" autocomplete="off" inputmode="email">
+      <label class="field-label" for="gateName">First &amp; last name</label>
+      <input type="text" id="gateName" class="field" placeholder="e.g. Robert Lawrence" autocomplete="name">
+      <button id="gateCreate" class="btn btn-primary btn-block">Let's play</button>
+      <button id="gateBack" class="btn btn-ghost btn-block">Back</button>
+    </div>
+    <p id="gateErr" class="gate-err hidden"></p>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <img src="logo-white.png" alt="4th & Cold" class="topbar-logo">
+    <div class="topbar-titles">
+      <span class="topbar-name" id="eventName">Golf Classic</span>
+      <span class="topbar-me" id="whoami"></span>
+    </div>
+    <button id="adminBtn" class="btn btn-tiny btn-ghost">Admin</button>
+    <button id="switchBtn" class="btn btn-tiny btn-ghost" title="Switch player">Switch</button>
+  </header>
+
+  <div id="statusBanner" class="status-banner hidden"></div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="register">Register</button>
+    <button class="tab" data-tab="roster">Roster</button>
+    <button class="tab hidden" data-tab="admin" id="adminTab">Admin</button>
+  </nav>
+
+  <main>
+    <section id="tab-register" class="tab-panel"></section>
+    <section id="tab-roster" class="tab-panel hidden"></section>
+    <section id="tab-admin" class="tab-panel hidden"></section>
+  </main>
+</div>
+
+<!-- Modal -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box" id="modalBox"></div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

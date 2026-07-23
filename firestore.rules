@@ -1,0 +1,137 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- helpers -------------------------------------------------
+    function signedIn() { return request.auth != null; }
+
+    // Hard-coded bootstrap full admin — cannot be locked out.
+    function bootstrapFull() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == 'roberthlawrence@gmail.com';
+    }
+
+    function cfgExists() {
+      return exists(/databases/$(database)/documents/config/current);
+    }
+    function cfg() {
+      return get(/databases/$(database)/documents/config/current).data;
+    }
+
+    function isFullAdmin() {
+      return bootstrapFull()
+        || (signedIn()
+            && request.auth.token.email != null
+            && cfgExists()
+            && request.auth.token.email.lower() in cfg().fullAdmins);
+    }
+
+    function isFinAdmin() {
+      return isFullAdmin()
+        || (signedIn()
+            && request.auth.token.email != null
+            && cfgExists()
+            && request.auth.token.email.lower() in cfg().finAdmins);
+    }
+
+    function regOpen() {
+      return cfgExists() && cfg().registrationClosed != true;
+    }
+
+    // ---- config --------------------------------------------------
+    // Public read. First Google-signed-in user may create it once
+    // (first-run bootstrap — the app auto-adds the hard-coded admin).
+    match /config/current {
+      allow read: if true;
+      allow create: if signedIn() && request.auth.token.email != null;
+      allow update, delete: if isFullAdmin();
+    }
+
+    // Team-number counter — incremented in transactions when teams form.
+    match /config/counters {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+
+    // ---- accounts ------------------------------------------------
+    // Honor-system identity (same as the squares board / chip draw).
+    // Readable by signed-in users so the roster & balances work.
+    // paidTotal is only ever set by admins in practice; audit covers abuse.
+    match /accounts/{key} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.email is string
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 3;
+      allow update: if isFinAdmin()
+        || (signedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'uid']));
+      allow delete: if isFullAdmin();
+    }
+
+    // ---- registrations -------------------------------------------
+    match /registrations/{regId} {
+      allow read: if signedIn();
+      allow create: if isFinAdmin()
+        || (signedIn()
+            && regOpen()
+            && request.resource.data.type in ['individual', 'team']
+            && request.resource.data.players is list
+            && request.resource.data.players.size() >= 1
+            && request.resource.data.players.size() <= 2
+            && request.resource.data.ownerEmail is string
+            && request.resource.data.price is number);
+      // Players can come back any time to fix names, handicaps, and
+      // pairing preferences; only admins can move players between teams.
+      allow update: if isFinAdmin()
+        || (signedIn()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['players', 'preference', 'partnerName', 'updatedAt']));
+      // Self-service delete while open, same device, if not paired onto
+      // a team by an admin (own team registrations can be removed).
+      allow delete: if isFinAdmin()
+        || (signedIn()
+            && regOpen()
+            && resource.data.uid == request.auth.uid
+            && (resource.data.teamId == null || resource.data.type == 'team'));
+    }
+
+    // ---- teams ---------------------------------------------------
+    // Created by players (team registrations, via transaction) or by
+    // admins (pairing / auto-assign). Hole edits are admin-only.
+    match /teams/{teamId} {
+      allow read: if signedIn();
+      allow create: if isFinAdmin()
+        || (signedIn()
+            && regOpen()
+            && request.resource.data.number is int
+            && request.resource.data.players is list);
+      allow update: if isFinAdmin()
+        || (signedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players']));
+      allow delete: if isFinAdmin()
+        || (signedIn() && regOpen());
+    }
+
+    // ---- payments ------------------------------------------------
+    // Financial + full admins only.
+    match /payments/{payId} {
+      allow read, write: if isFinAdmin();
+    }
+
+    // ---- audit ---------------------------------------------------
+    // Append-only. Anyone signed in can write a line; only full
+    // admins read; nobody edits or deletes.
+    match /audit/{lineId} {
+      allow create: if signedIn();
+      allow read: if isFullAdmin();
+      allow update, delete: if false;
+    }
+
+    // ---- archives ------------------------------------------------
+    match /archives/{archiveId} {
+      allow read, write: if isFullAdmin();
+    }
+  }
+}
