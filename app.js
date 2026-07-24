@@ -1,5 +1,5 @@
 // =====================================================================
-// 4th & Cold Golf Classic — registration app
+// Fourth and Cold Golf Open — registration app
 // Stack: GitHub Pages + Firebase (Firestore, Anonymous + Google auth)
 // Hard-coded full admin: roberthlawrence@gmail.com
 // =====================================================================
@@ -74,7 +74,7 @@ async function audit(action, detail) {
 // ------------------------------------------------ config helpers
 function defaultConfig(bootEmail) {
   return {
-    eventName: "4th & Cold Golf Classic",
+    eventName: "Fourth and Cold Golf Open",
     formatLine: "2-Man Scramble",
     venueName: "Mustang Creek Country Club",
     venueAddress: "1102 Beech St, Taylor, TX 76574",
@@ -1049,7 +1049,7 @@ async function saveSettings() {
   const emails = (t) => t.split("\n").map(cleanEmail).filter(validEmail);
   const upd = {
     registrationClosed: $("setClosed").checked,
-    eventName: $("setName").value.trim() || "4th & Cold Golf Classic",
+    eventName: $("setName").value.trim() || "Fourth and Cold Golf Open",
     formatLine: $("setFormat").value.trim(),
     eventDate: $("setDate").value.trim(),
     eventTime: $("setTime").value.trim(),
