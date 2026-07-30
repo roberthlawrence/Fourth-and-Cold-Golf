@@ -89,6 +89,17 @@ function defaultConfig(bootEmail) {
     venmoLines: "dan-huskerson | Blanco & Leander crew\nmarcus-dawes | Houston crew\nrandyn-tenery | DFW crew",
     fullAdmins: [BOOTSTRAP_FULL_ADMIN, ...(bootEmail && bootEmail !== BOOTSTRAP_FULL_ADMIN ? [bootEmail] : [])],
     finAdmins: [],
+    // ---- live scoring (day of) ----
+    scoringOpen: false,
+    holesCount: 18,                          // holes each team plays
+    parByHole: [4, 4, 3, 3, 5, 3, 5, 4, 4], // Mustang Creek card (9 physical holes, par 35)
+    paceThreshold: 3,                        // holes behind field median before flagging
+    // Day-of purchases — one per line: emoji | name | price | unit | max per team | note
+    // unit "each" = countable use; anything else (ft, yd...) = amount deducted per use.
+    // Empty = extras off. Sample lines live in Settings, ready to add with one tap.
+    extrasLines: "",
+    contestLD: 0,   // physical hole # for long drive (0 = none)
+    contestCP: 0,   // physical hole # for closest to the pin (0 = none)
     updatedAt: nowIso()
   };
 }
@@ -117,6 +128,94 @@ function spotsLeft() {
   const max = Number(S.config?.maxPlayers || 0);
   if (!max) return Infinity;
   return Math.max(0, max - spotsUsed());
+}
+
+// ------------------------------------------------ live scoring helpers
+function pars()      { return (S.config?.parByHole || [4,4,3,3,5,3,5,4,4]).map(Number); }
+function holesCount(){ return Number(S.config?.holesCount || 18); }
+function startHole(t){ const n = parseInt(t?.hole); return (n >= 1 && n <= pars().length) ? n : 1; }
+function physHole(t, seq) { return ((startHole(t) - 1 + (seq - 1)) % pars().length) + 1; }
+function parFor(t, seq)   { return pars()[physHole(t, seq) - 1]; }
+function relFmt(n) { return n === 0 ? "E" : (n > 0 ? "+" + n : String(n)); }
+
+function teamScore(t) {
+  let played = 0, rel = 0, strokes = 0;
+  const sc = t.scores || {};
+  for (let seq = 1; seq <= holesCount(); seq++) {
+    const s = Number(sc[seq]);
+    if (!sc[seq] || isNaN(s)) continue;
+    played++; strokes += s; rel += s - parFor(t, seq);
+  }
+  const pen = (t.penalties || []).reduce((a, p) => a + Number(p.strokes || 0), 0);
+  return { played, strokes, pen, rel: rel + pen, relRaw: rel };
+}
+function nextSeq(t) {
+  const sc = t.scores || {};
+  for (let seq = 1; seq <= holesCount(); seq++) if (sc[seq] == null || sc[seq] === "") return seq;
+  return 0; // done
+}
+const SAMPLE_EXTRAS = ["🎟 | Mulligan | 10 | each | 4 | re-hit any shot", "🧵 | Putt string | 1 | ft | 50 | putt inside your string = good, cut off what you use", "🪂 | 150-yd drop | 20 | each | 1 | drop at the 150 marker on a par 5", "👗 | Red tee pass | 10 | each | 2 | hit one drive from the forward tees"];
+
+function contestHoleOptions(current) {
+  let o = `<option value="0">— none —</option>`;
+  pars().forEach((p, i) => {
+    const h = i + 1;
+    o += `<option value="${h}" ${Number(current) === h ? "selected" : ""}>#${h} (par ${p})</option>`;
+  });
+  return o;
+}
+
+function extrasList() {
+  return String(S.config?.extrasLines || "").split("\n").map(l => {
+    const [emoji, name, price, unit, max, note] = l.split("|").map(s => (s || "").trim());
+    if (!name) return null;
+    return {
+      id: name.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
+      emoji: emoji || "⭐", name,
+      price: parseFloat(price) || 0,
+      unit: (unit || "each").toLowerCase(),
+      max: parseInt(max) || 0,
+      note: note || ""
+    };
+  }).filter(Boolean);
+}
+function extraPurchased(t, id) { return Number((t.extrasPurchased || {})[id] || 0); }
+function extraUsed(t, id) {
+  return (t.extraUses || []).filter(u => u.id === id).reduce((a, u) => a + Number(u.amt || 0), 0);
+}
+function extraLeft(t, id) { return Math.max(0, extraPurchased(t, id) - extraUsed(t, id)); }
+function extraUsesAt(t, seq) { return (t.extraUses || []).filter(u => Number(u.seq) === Number(seq)); }
+function teamLabel(t) {
+  return (t.customName ? esc(t.customName) + " " : "") + `<span class="tnum">(T${t.number})</span>`;
+}
+function fieldMedianThru() {
+  const played = Object.values(S.teams).map(t => teamScore(t).played).sort((a, b) => a - b);
+  if (!played.length) return 0;
+  const m = Math.floor(played.length / 2);
+  return played.length % 2 ? played[m] : Math.round((played[m - 1] + played[m]) / 2);
+}
+function isBulkEntry(t) {
+  // 4+ hole scores stamped within any 3-minute window = likely end-dump
+  const times = Object.values(t.scoreTimes || {}).map(x => Date.parse(x)).filter(x => !isNaN(x)).sort((a, b) => a - b);
+  for (let i = 0; i + 3 < times.length; i++) if (times[i + 3] - times[i] <= 3 * 60 * 1000) return true;
+  return false;
+}
+function agoFmt(iso) {
+  const ms = Date.now() - Date.parse(iso || "");
+  if (isNaN(ms)) return "";
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return m + "m ago";
+  return Math.floor(m / 60) + "h " + (m % 60) + "m ago";
+}
+function myTeam() {
+  if (S.me?.myTeamId && S.teams[S.me.myTeamId]) return S.teams[S.me.myTeamId];
+  // fall back: a team containing one of my registrations
+  if (S.me) {
+    const mine = Object.values(S.regs).find(r => r.ownerKey === S.me.id && r.teamId && S.teams[r.teamId]);
+    if (mine) return S.teams[mine.teamId];
+  }
+  return null;
 }
 function regClosed() {
   return !!S.config?.registrationClosed || spotsLeft() <= 0;
@@ -318,12 +417,19 @@ function renderAll() {
   renderAdminButton();
   if (S.activeTab === "register") renderRegister();
   if (S.activeTab === "roster")   renderRoster();
+  if (S.activeTab === "live")     renderLive();
   if (S.activeTab === "admin")    renderAdmin();
 }
 
 function renderBanner() {
   const b = $("statusBanner");
   const max = Number(S.config.maxPlayers || 0);
+  if (S.config.scoringOpen) {
+    b.className = "status-banner live";
+    b.innerHTML = `<span class="live-dot"></span> LIVE — scoring is open`;
+    b.classList.remove("hidden");
+    return;
+  }
   if (S.config.registrationClosed) {
     b.className = "status-banner closed";
     b.textContent = "Registration is closed";
@@ -681,7 +787,7 @@ function renderRoster() {
       const ps = (t.players || []).map(p =>
         `${esc(p.name)} <span class="hcp">${p.handicap !== "" && p.handicap != null ? "(" + esc(p.handicap) + ")" : ""}</span>`
       ).join("<br>");
-      html += `<tr><td><span class="tee">${t.number}</span></td><td>${ps}</td>${anyHoles ? `<td>${t.hole ? `<span class="hole-chip">${esc(t.hole)}</span>` : ""}</td>` : ""}</tr>`;
+      html += `<tr><td><span class="tee">${t.number}</span></td><td>${t.customName ? `<b>${esc(t.customName)}</b><br>` : ""}${ps}</td>${anyHoles ? `<td>${t.hole ? `<span class="hole-chip">${esc(t.hole)}</span>` : ""}</td>` : ""}</tr>`;
     });
     html += `</table></div>`;
   }
@@ -705,6 +811,301 @@ function renderRoster() {
   html += `</div>`;
 
   $("tab-roster").innerHTML = html;
+}
+
+
+// ---------------------------------------------------------------------
+// LIVE TAB — leaderboard + team scoring
+// ---------------------------------------------------------------------
+function renderLive() {
+  const el = $("tab-live");
+  const c = S.config;
+  const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
+  let html = "";
+
+  if (!c.scoringOpen) {
+    html += `<div class="card"><div class="card-title"><span class="flag">🔴</span> Live scoring</div>
+      <p class="muted">Scoring opens on event day. Check back at the shotgun start — the leaderboard will be right here.</p></div>`;
+    $("tab-live").innerHTML = html + contestsHtml() + extrasSaleHtml() + leaderboardHtml(teams, false);
+    return;
+  }
+
+  html += myScoringHtml();
+  html += leaderboardHtml(teams, true);
+  html += contestsHtml();
+  html += extrasSaleHtml();
+  el.innerHTML = html;
+  wireLive();
+}
+
+function leaderboardHtml(teams, open) {
+  const scored = teams.map(t => ({ t, s: teamScore(t) }))
+    .sort((a, b) => (a.s.rel - b.s.rel) || (b.s.played - a.s.played) || (a.t.number - b.t.number));
+  const med = fieldMedianThru();
+  const thr = Number(S.config.paceThreshold || 3);
+
+  let html = `<div class="card"><div class="card-title"><span class="flag">🏆</span> Leaderboard</div>`;
+  if (!teams.length) return html + `<p class="muted">No teams yet.</p></div>`;
+  html += `<div class="lb">`;
+  let lastRel = null, lastRank = 0;
+  scored.forEach((x, i) => {
+    const { t, s } = x;
+    const rank = (open && s.played) ? ((s.rel === lastRel) ? lastRank : i + 1) : "";
+    if (open && s.played) { lastRel = s.rel; lastRank = rank; }
+    const behind = open && med - s.played >= thr && s.played < holesCount();
+    const done = s.played >= holesCount();
+    const exChips = extrasList().map(x => {
+      const p = extraPurchased(t, x.id); if (!p) return "";
+      return x.unit === "each"
+        ? `<span class="chip chip-mull" title="${esc(x.name)} used / bought">${x.emoji} ${extraUsed(t, x.id)}/${p}</span>`
+        : `<span class="chip chip-mull" title="${esc(x.name)} remaining">${x.emoji} ${extraLeft(t, x.id)}${esc(x.unit)} left</span>`;
+    }).join("");
+    html += `<div class="lb-row ${behind ? "lb-behind" : ""}">
+      <span class="lb-rank">${rank ? (rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : rank) : "–"}</span>
+      <span class="lb-team">${teamLabel(t)}
+        ${t.lastScoreAt ? `<span class="lb-upd">upd ${agoFmt(t.lastScoreAt)}</span>` : ""}
+      </span>
+      <span class="lb-chips">
+        ${s.pen ? `<span class="chip chip-pen" title="${esc((t.penalties||[]).map(p=>p.strokes+" — "+p.note).join("; "))}">+${s.pen} pen</span>` : ""}
+        ${exChips}
+        ${behind ? `<span class="chip chip-behind">⏳ ${med - s.played} behind</span>` : ""}
+      </span>
+      <span class="lb-score ${s.rel < 0 ? "under" : s.rel > 0 ? "over" : ""}">${s.played ? relFmt(s.rel) : "—"}</span>
+      <span class="lb-thru">${done ? "F" : s.played ? `thru ${s.played}` : "not started"} <span class="lb-start">(S${startHole(t)}${esc(String(t.hole||"").replace(/^\d+/,""))})</span></span>
+    </div>`;
+  });
+  html += `</div>`;
+  if (open) html += `<p class="muted small" style="margin-top:8px">Every score is timestamped and logged with who entered it. Teams more than ${Number(S.config.paceThreshold||3)} holes behind the field get flagged — keep it honest, enter as you go. Committee reserves the right to assess penalties or remove teams for score dumping.</p>`;
+  return html + `</div>`;
+}
+
+function contests() {
+  const c = S.config || {};
+  const out = [];
+  if (c.contestLD >= 1) out.push({ hole: Number(c.contestLD), emoji: "💪", name: "Long drive", cls: "ld" });
+  if (c.contestCP >= 1) out.push({ hole: Number(c.contestCP), emoji: "🎯", name: "Closest to the pin", cls: "cp" });
+  return out;
+}
+function contestsHtml() {
+  const list = contests();
+  if (!list.length) return "";
+  return `<div class="card contest-card"><div class="card-title"><span class="flag">🏅</span> Contest holes</div>
+    <div class="roster-count">${list.map(x => `<span class="chip chip-contest">${x.emoji} ${esc(x.name)} — course hole <b>#${x.hole}</b> (par ${pars()[x.hole - 1]})</span>`).join("")}</div>
+    <p class="muted small" style="margin-top:6px">Winners called at the tent after the round — markers are on the hole.</p></div>`;
+}
+
+function extrasSaleHtml() {
+  const list = extrasList();
+  if (!list.length) return "";
+  let html = `<div class="card"><div class="card-title"><span class="flag">🛒</span> Day-of extras — cash or Venmo at the tent</div><div class="extras-list">`;
+  list.forEach(x => {
+    html += `<div class="extra-row"><span class="extra-emoji">${x.emoji}</span>
+      <span class="extra-info"><b>${esc(x.name)}</b> — ${money(x.price)}${x.unit === "each" ? " each" : "/" + esc(x.unit)}${x.max ? ` · max ${x.max}${x.unit === "each" ? "" : " " + esc(x.unit)} per team` : ""}
+      ${x.note ? `<br><span class="muted small">${esc(x.note)}</span>` : ""}</span></div>`;
+  });
+  return html + `</div></div>`;
+}
+
+function myScoringHtml() {
+  const t = myTeam();
+  if (!t) {
+    const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
+    return `<div class="card"><div class="card-title"><span class="flag">⛳</span> Enter scores</div>
+      <p class="muted">Pick your team — either player can keep score.</p>
+      <select class="field" id="claimTeam"><option value="">Select your team…</option>
+        ${teams.map(x => `<option value="${x.id}">T${x.number} — ${esc(x.customName || (x.players||[]).map(p=>p.name).join(" & "))}</option>`).join("")}
+      </select>
+      <button class="btn btn-primary btn-block" id="claimBtn">This is my team</button></div>`;
+  }
+
+  const s = teamScore(t);
+  const seq = nextSeq(t);
+  const myExtras = extrasList().filter(x => extraPurchased(t, x.id) > 0);
+  let html = `<div class="card"><div class="card-title"><span class="flag">⛳</span> ${teamLabel(t)} — your scorecard</div>
+    <div class="roster-count">
+      <span class="chip">${s.played ? relFmt(s.rel) + " thru " + s.played : "Not started"}</span>
+      <span class="chip">Start hole <b>${esc(t.hole || "?")}</b></span>
+      ${myExtras.map(x => `<span class="chip">${x.emoji} ${x.unit === "each" ? `${extraLeft(t, x.id)} left` : `${extraLeft(t, x.id)}${esc(x.unit)} left`}</span>`).join("")}
+      ${s.pen ? `<span class="chip chip-pen">+${s.pen} penalty</span>` : ""}
+    </div>`;
+
+  if (seq) {
+    const ph = physHole(t, seq), par = parFor(t, seq);
+    const cs = contests().filter(x => x.hole === ph);
+    html += `<div class="entry-box">
+      ${cs.map(x => `<div class="contest-flag ${x.cls}">${x.emoji} ${x.name.toUpperCase()} HOLE — ${x.cls === "ld" ? "bombs away" : "stick it close"}</div>`).join("")}
+      <div class="entry-head">Your hole <b>${seq}</b> of ${holesCount()} · course hole <b>#${ph}</b> · par <b>${par}</b></div>
+      <div class="stepper">
+        <button class="step-btn" id="scMinus">−</button>
+        <span class="step-val" id="scVal" data-val="${par}">${par}</span>
+        <button class="step-btn" id="scPlus">+</button>
+      </div>
+      ${extraControlsHtml(t, seq, "sc")}
+      <button class="btn btn-primary btn-block" id="scSave">Save hole ${seq}</button>
+    </div>`;
+  } else {
+    html += `<p class="pay-ok" style="font-weight:800;margin:10px 0">🏁 Round complete — great playing!</p>`;
+  }
+
+  // full grid
+  html += `<div class="score-grid">`;
+  for (let q = 1; q <= holesCount(); q++) {
+    const v = (t.scores || {})[q];
+    const par = parFor(t, q), ph = physHole(t, q);
+    const cls = v == null ? "" : v < par ? "sg-under" : v > par ? "sg-over" : "sg-even";
+    const marks = extraUsesAt(t, q).map(u => (extrasList().find(x => x.id === u.id) || {}).emoji || "⭐").join("");
+    const cMark = contests().filter(x => x.hole === ph).map(x => x.emoji).join("");
+    html += `<button class="sg-cell ${cls} ${cMark ? "sg-contest" : ""}" data-editscore="${q}" title="course hole ${ph}, par ${par}${cMark ? " — contest hole" : ""}">
+      <span class="sg-hole">${q}<span class="sg-phys">#${ph}</span></span>
+      <span class="sg-val">${v ?? "·"}</span>${marks ? `<span class="sg-mull">${marks}</span>` : ""}${cMark ? `<span class="sg-cmark">${cMark}</span>` : ""}
+    </button>`;
+  }
+  html += `</div>`;
+
+  html += `<div class="add-row" style="margin-top:12px">
+      <input class="field" id="teamNameIn" placeholder="Team name (fun optional)" value="${esc(t.customName || "")}" maxlength="26" style="flex:1">
+      <button class="btn btn-ghost" id="teamNameSave">Save name</button>
+    </div>
+    <button class="btn btn-ghost btn-block btn-tiny" id="unclaimBtn" style="margin-top:8px">Not your team? Switch</button>
+  </div>`;
+  return html;
+}
+
+// controls for using extras on a hole; prefix keeps sc/em ids distinct
+function extraControlsHtml(t, seq, prefix) {
+  const existing = extraUsesAt(t, seq);
+  let html = "";
+  extrasList().forEach(x => {
+    const cur = existing.filter(u => u.id === x.id).reduce((a, u) => a + Number(u.amt || 0), 0);
+    const avail = extraLeft(t, x.id) + cur;
+    if (avail <= 0) return;
+    if (x.unit === "each") {
+      html += `<label class="mull-row">${x.emoji}
+        <select class="mull-n" data-exuse="${x.id}" data-exprefix="${prefix}">
+          ${Array.from({ length: avail + 1 }, (_, i) => `<option value="${i}" ${i === cur ? "selected" : ""}>${i}</option>`).join("")}
+        </select> ${esc(x.name)}${avail > 1 || cur ? "" : ""} <span class="muted small">(${avail} avail)</span></label>`;
+    } else {
+      html += `<label class="mull-row">${x.emoji} ${esc(x.name)}:
+        <input class="mull-ft" inputmode="numeric" data-exuse="${x.id}" data-exprefix="${prefix}" value="${cur || ""}" placeholder="0">
+        <span class="muted small">${esc(x.unit)} (${avail} left)</span></label>`;
+    }
+  });
+  return html;
+}
+function collectExtraUses(prefix, t, seq) {
+  const uses = [];
+  let err = null;
+  document.querySelectorAll(`[data-exuse][data-exprefix="${prefix}"]`).forEach(el => {
+    const id = el.dataset.exuse;
+    const amt = Math.max(0, Number(el.value) || 0);
+    if (!amt) return;
+    const x = extrasList().find(e => e.id === id);
+    const cur = extraUsesAt(t, seq).filter(u => u.id === id).reduce((a, u) => a + Number(u.amt || 0), 0);
+    if (amt > extraLeft(t, id) + cur) { err = `Not enough ${x?.name || id} left.`; return; }
+    uses.push({ id, seq, amt, ts: nowIso(), by: (S.me?.name || "?") });
+  });
+  return { uses, err };
+}
+
+function wireLive() {
+  $("claimBtn")?.addEventListener("click", async () => {
+    const id = $("claimTeam").value;
+    if (!id) return toast("Pick your team first.", true);
+    try {
+      await updateDoc(doc(db, "accounts", S.me.id), { myTeamId: id });
+      audit("team_claimed", `${S.me.name} → T${S.teams[id]?.number}`);
+    } catch (e) { toast(e.message, true); }
+  });
+  $("unclaimBtn")?.addEventListener("click", async () => {
+    try { await updateDoc(doc(db, "accounts", S.me.id), { myTeamId: null }); } catch (e) { toast(e.message, true); }
+  });
+  $("teamNameSave")?.addEventListener("click", async () => {
+    const t = myTeam(); if (!t) return;
+    const name = $("teamNameIn").value.trim();
+    try {
+      await updateDoc(doc(db, "teams", t.id), { customName: name });
+      audit("team_renamed", `T${t.number} → "${name}" by ${S.me?.name}`);
+      toast(name ? `You are now ${name} (T${t.number}).` : "Back to plain T" + t.number + ".");
+    } catch (e) { toast(e.message, true); }
+  });
+
+  const step = (d) => {
+    const el = $("scVal"); if (!el) return;
+    const v = Math.max(1, Math.min(15, Number(el.dataset.val) + d));
+    el.dataset.val = v; el.textContent = v;
+  };
+  $("scMinus")?.addEventListener("click", () => step(-1));
+  $("scPlus")?.addEventListener("click", () => step(1));
+
+  $("scSave")?.addEventListener("click", async () => {
+    const t = myTeam(); if (!t) return;
+    const seq = nextSeq(t); if (!seq) return;
+    const v = Number($("scVal").dataset.val);
+    const { uses, err } = collectExtraUses("sc", t, seq);
+    if (err) return toast(err, true);
+    await saveHole(t, seq, v, uses, false);
+  });
+
+  document.querySelectorAll("[data-editscore]").forEach(b => b.addEventListener("click", () => {
+    const t = myTeam(); if (!t) return;
+    openEditScore(t, Number(b.dataset.editscore));
+  }));
+}
+
+async function saveHole(t, seq, strokes, uses, isEdit) {
+  try {
+    // replace this hole's extra uses with the new set
+    const otherUses = (t.extraUses || []).filter(u => Number(u.seq) !== Number(seq));
+    const upd = {
+      ["scores." + seq]: strokes,
+      ["scoreTimes." + seq]: nowIso(),
+      extraUses: [...otherUses, ...(uses || [])],
+      lastScoreAt: nowIso(),
+      lastScoreBy: S.me?.name || "?"
+    };
+    await updateDoc(doc(db, "teams", t.id), upd);
+    const ph = physHole(t, seq), par = parFor(t, seq);
+    const useTxt = (uses || []).map(u => {
+      const x = extrasList().find(e => e.id === u.id);
+      return `${u.amt}${x && x.unit !== "each" ? x.unit : "×"} ${x?.name || u.id}`;
+    }).join(", ");
+    audit(isEdit ? "score_edited" : "score_entered",
+      `T${t.number} hole ${seq} (course #${ph}): ${strokes} (par ${par})${useTxt ? " — " + useTxt : ""} — by ${S.me?.name || "?"}`);
+    toast(`Hole ${seq} saved: ${strokes} (${relFmt(strokes - par)}).`);
+  } catch (e) { toast(e.message, true); }
+}
+
+function openEditScore(t, seq) {
+  const cur = (t.scores || {})[seq];
+  const par = parFor(t, seq), ph = physHole(t, seq);
+  openModal(`
+    <div class="modal-title">Hole ${seq} <span class="muted small">(course #${ph} · par ${par})</span></div>
+    ${cur != null ? `<p class="muted small">Edits are logged on the audit trail.</p>` : ""}
+    <div class="stepper" style="margin:14px 0">
+      <button class="step-btn" id="emMinus">−</button>
+      <span class="step-val" id="emVal" data-val="${cur ?? par}">${cur ?? par}</span>
+      <button class="step-btn" id="emPlus">+</button>
+    </div>
+    ${extraControlsHtml(t, seq, "em")}
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="emSave">Save</button>
+    </div>`);
+  const step = (d) => {
+    const el = $("emVal");
+    const v = Math.max(1, Math.min(15, Number(el.dataset.val) + d));
+    el.dataset.val = v; el.textContent = v;
+  };
+  $("emMinus").addEventListener("click", () => step(-1));
+  $("emPlus").addEventListener("click", () => step(1));
+  $("mCancel").addEventListener("click", closeModal);
+  $("emSave").addEventListener("click", async () => {
+    const v = Number($("emVal").dataset.val);
+    const { uses, err } = collectExtraUses("em", t, seq);
+    if (err) return toast(err, true);
+    await saveHole(t, seq, v, uses, cur != null);
+    closeModal();
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -752,6 +1153,7 @@ function renderAdmin() {
   let html = "";
   html += adminPairingHtml();
   html += adminHolesHtml();
+  html += adminScoringHtml();
   html += adminPaymentsHtml();
   if (S.isFull) html += adminSettingsHtml() + adminDangerHtml() + adminAuditHtml();
   el.innerHTML = html;
@@ -882,7 +1284,7 @@ function confirmAutoAssign() {
 // ---------- holes ----------
 function holeOptions(current) {
   let opts = `<option value="">—</option>`;
-  for (let h = 1; h <= 18; h++) for (const s of ["A", "B"]) {
+  for (let h = 1; h <= pars().length; h++) for (const s of ["A", "B"]) {
     const v = `${h}${s}`;
     opts += `<option value="${v}" ${current === v ? "selected" : ""}>${v}</option>`;
   }
@@ -904,6 +1306,115 @@ function adminHolesHtml() {
   });
   html += `</table></div><p class="muted small" style="margin-top:8px">Saves instantly and shows on the public roster.</p></div>`;
   return html;
+}
+
+
+// ---------- live scoring (fin + full) ----------
+function adminScoringHtml() {
+  const c = S.config;
+  const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
+  const med = fieldMedianThru();
+  const thr = Number(c.paceThreshold || 3);
+  let html = `<div class="card admin-section"><div class="card-title"><span class="flag">🔴</span> Live scoring</div>
+    <div class="toggle-row">
+      <div><b>Scoring open</b><br><span class="muted small">Flip on at the shotgun start. Shows the LIVE banner to everyone.</span></div>
+      <label class="switch"><input type="checkbox" id="setScoring" ${c.scoringOpen ? "checked" : ""}><span class="slider"></span></label>
+    </div>`;
+  if (!teams.length) return html + `<p class="muted" style="margin-top:8px">Teams will appear here once they're set.</p></div>`;
+  const anyExtras = extrasList().length > 0;
+  html += `<div class="table-scroll" style="margin-top:10px"><table class="admin-table">
+    <tr><th>Team</th><th>Thru</th><th>Score</th>${anyExtras ? "<th>Extras</th>" : ""}<th>Flags</th><th></th></tr>`;
+  teams.forEach(t => {
+    const s = teamScore(t);
+    const behind = c.scoringOpen && med - s.played >= thr && s.played < holesCount();
+    const bulk = isBulkEntry(t);
+    html += `<tr>
+      <td><b>T${t.number}</b> ${t.customName ? `<span class="small">${esc(t.customName)}</span>` : ""}<br><span class="muted small">${(t.players||[]).map(p=>esc(p.name)).join(" & ")}</span></td>
+      <td>${s.played}/${holesCount()}</td>
+      <td>${s.played ? relFmt(s.rel) : "—"}${s.pen ? ` <span class="chip-pen small">(+${s.pen})</span>` : ""}</td>
+      ${anyExtras ? `<td class="small">${extrasList().map(x => extraPurchased(t, x.id) ? `${x.emoji}${extraUsed(t, x.id)}/${extraPurchased(t, x.id)}` : "").filter(Boolean).join(" ") || "—"}<br><button class="btn btn-tiny btn-ghost" data-extras="${t.id}">Set</button></td>` : ""}
+      <td class="small">${behind ? `<span class="chip chip-behind">⏳ ${med - s.played} behind</span>` : ""} ${bulk ? `<span class="chip chip-pen" title="4+ holes entered within 3 minutes">📦 bulk entry</span>` : ""}</td>
+      <td><button class="btn btn-tiny btn-ghost" data-penalty="${t.id}">Penalty</button></td>
+    </tr>`;
+    (t.penalties || []).forEach((p, i) => {
+      html += `<tr class="pen-row"><td colspan="${anyExtras ? 5 : 4}" class="small">⚠ +${Number(p.strokes)} — ${esc(p.note || "")} <span class="muted">(${esc(p.by || "")}, ${esc((p.ts || "").slice(5, 16).replace("T", " "))})</span></td>
+        <td><button class="btn btn-tiny btn-ghost" data-unpen="${t.id}|${i}">Remove</button></td></tr>`;
+    });
+  });
+  html += `</table></div>
+    <p class="muted small" style="margin-top:8px">Sell extras for cash/Venmo, log the money under Payments as usual, then tap <b>Set</b> to record what each team bought. Penalty strokes add straight onto the team score and show on the public leaderboard. Field median: thru ${med}.</p></div>`;
+  return html;
+}
+
+function openExtrasModal(teamId) {
+  const t = S.teams[teamId]; if (!t) return;
+  const list = extrasList();
+  openModal(`
+    <div class="modal-title">Extras — T${t.number}${t.customName ? " " + esc(t.customName) : ""}</div>
+    <p class="muted small">Amount bought per team${list.some(x => x.max) ? " (maxes shown)" : ""}. Money gets logged under Payments.</p>
+    ${list.map(x => `
+      <label class="field-label">${x.emoji} ${esc(x.name)} — ${money(x.price)}${x.unit === "each" ? " each" : "/" + esc(x.unit)}${x.max ? ` · max ${x.max}` : ""}</label>
+      <input class="field" inputmode="numeric" id="exbuy_${x.id}" value="${extraPurchased(t, x.id) || ""}" placeholder="0">
+      <p class="muted small" style="margin:2px 0 8px">used so far: ${extraUsed(t, x.id)}</p>`).join("")}
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-gold" id="exGo">Save</button>
+    </div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  $("exGo").addEventListener("click", async () => {
+    const bought = {};
+    let bad = null;
+    list.forEach(x => {
+      const v = Math.max(0, Number($("exbuy_" + x.id).value) || 0);
+      if (x.max && v > x.max) bad = `${x.name}: max ${x.max} per team.`;
+      if (v) bought[x.id] = v;
+    });
+    if (bad) return toast(bad, true);
+    try {
+      await updateDoc(doc(db, "teams", t.id), { extrasPurchased: bought });
+      audit("extras_set", `T${t.number}: ` + (list.map(x => bought[x.id] ? `${bought[x.id]} ${x.name}` : "").filter(Boolean).join(", ") || "none"));
+      toast(`T${t.number} extras saved.`);
+      closeModal();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+function openPenalty(teamId) {
+  const t = S.teams[teamId]; if (!t) return;
+  openModal(`
+    <div class="modal-title">Penalty — T${t.number}${t.customName ? " " + esc(t.customName) : ""}</div>
+    <label class="field-label">Penalty strokes</label>
+    <input class="field" id="mPenN" inputmode="numeric" value="2">
+    <label class="field-label">Reason (shows on leaderboard tap &amp; audit)</label>
+    <input class="field" id="mPenNote" value="Pace of play — scores not entered as played">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-danger" id="mPenGo">Assess penalty</button>
+    </div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  $("mPenGo").addEventListener("click", async () => {
+    const n = parseInt($("mPenN").value);
+    if (isNaN(n) || n < 1) return toast("Enter penalty strokes.", true);
+    const note = $("mPenNote").value.trim();
+    try {
+      const pens = [...(t.penalties || []), { strokes: n, note, by: S.adminEmail, ts: nowIso() }];
+      await updateDoc(doc(db, "teams", t.id), { penalties: pens });
+      audit("penalty_assessed", `T${t.number}: +${n} — ${note}`);
+      toast(`+${n} penalty on T${t.number}.`);
+      closeModal();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+async function removePenalty(teamId, idx) {
+  const t = S.teams[teamId]; if (!t) return;
+  const pens = [...(t.penalties || [])];
+  const [gone] = pens.splice(idx, 1);
+  try {
+    await updateDoc(doc(db, "teams", teamId), { penalties: pens });
+    audit("penalty_removed", `T${t.number}: +${gone?.strokes} — ${gone?.note}`);
+    toast("Penalty removed.");
+  } catch (e) { toast(e.message, true); }
 }
 
 // ---------- payments ----------
@@ -1030,7 +1541,23 @@ function adminSettingsHtml() {
       <div><label class="field-label">Team price</label><input class="field" id="setTeam" inputmode="decimal" value="${c.teamPrice}"></div>
       <div><label class="field-label">Max players (0 = unlimited)</label><input class="field" id="setMax" inputmode="numeric" value="${c.maxPlayers || 0}"></div>
       <div><label class="field-label">Venue phone</label><input class="field" id="setPhone" value="${esc(c.venuePhone)}"></div>
+      <div><label class="field-label">Holes each team plays</label><input class="field" id="setHoles" inputmode="numeric" value="${c.holesCount || 18}"></div>
+      <div><label class="field-label">Pace flag — holes behind</label><input class="field" id="setPace" inputmode="numeric" value="${c.paceThreshold || 3}"></div>
     </div>
+    <label class="field-label">Day-of extras — one per line: emoji | name | price | unit | max per team | note<br><span class="muted small" style="font-weight:400">unit "each" = countable (mulligans, drops); "ft" etc = amount used per go (putt string). Delete a line to turn it off; empty box turns extras off.</span></label>
+    <textarea class="field" id="setExtras" rows="3" placeholder="empty = no extras">${esc(c.extrasLines || "")}</textarea>
+    <div class="samples-box">
+      <p class="small" style="font-weight:700;margin:0 0 6px">Sample ideas — tap ＋ to add:</p>
+      ${SAMPLE_EXTRAS.map((s, i) => `<div class="sample-line"><button class="btn btn-tiny btn-ghost" data-addsample="${i}">＋</button><code>${esc(s)}</code></div>`).join("")}
+    </div>
+    <div class="admin-grid" style="margin-top:12px">
+      <div><label class="field-label">💪 Long drive contest — course hole</label>
+        <select class="field" id="setLD">${contestHoleOptions(c.contestLD)}</select></div>
+      <div><label class="field-label">🎯 Closest to the pin — course hole</label>
+        <select class="field" id="setCP">${contestHoleOptions(c.contestCP)}</select></div>
+    </div>
+    <label class="field-label">Course pars — comma-separated, one per physical hole (Mustang Creek: 9 holes)</label>
+    <input class="field" id="setPars" value="${esc((c.parByHole || []).join(", "))}">
     <label class="field-label">Venue name</label><input class="field" id="setVenue" value="${esc(c.venueName)}">
     <label class="field-label">Venue address</label><input class="field" id="setAddr" value="${esc(c.venueAddress)}">
     <label class="field-label">Welcome blurb</label><input class="field" id="setWelcome" value="${esc(c.welcome)}">
@@ -1061,6 +1588,15 @@ async function saveSettings() {
     venueAddress: $("setAddr").value.trim(),
     welcome: $("setWelcome").value.trim(),
     venmoLines: $("setVenmo").value,
+    holesCount: Math.max(1, parseInt($("setHoles").value) || 18),
+    paceThreshold: Math.max(1, parseInt($("setPace").value) || 3),
+    extrasLines: $("setExtras").value,
+    contestLD: parseInt($("setLD").value) || 0,
+    contestCP: parseInt($("setCP").value) || 0,
+    parByHole: (() => {
+      const p = $("setPars").value.split(",").map(x => parseInt(x.trim())).filter(x => x >= 3 && x <= 6);
+      return p.length ? p : [4, 4, 3, 3, 5, 3, 5, 4, 4];
+    })(),
     fullAdmins: Array.from(new Set([BOOTSTRAP_FULL_ADMIN, ...emails($("setFull").value)])),
     finAdmins: emails($("setFin").value),
     updatedAt: nowIso()
@@ -1248,6 +1784,26 @@ function wireAdmin() {
       audit("team_split", `Team ${t.number} (${(t.players || []).map(p => p.name).join(" & ")})`);
       toast(`Team ${t.number} split — both players are back in the pairing pool.`);
     } catch (e) { toast(e.message, true); }
+  }));
+  $("setScoring")?.addEventListener("change", async (e) => {
+    try {
+      await updateDoc(doc(db, "config", "current"), { scoringOpen: e.target.checked, updatedAt: nowIso() });
+      audit(e.target.checked ? "scoring_opened" : "scoring_closed", "by " + S.adminEmail);
+      toast(e.target.checked ? "Scoring is LIVE." : "Scoring closed.");
+    } catch (err) { toast(err.message, true); }
+  });
+  document.querySelectorAll("[data-extras]").forEach(b => b.addEventListener("click", () => openExtrasModal(b.dataset.extras)));
+  document.querySelectorAll("[data-addsample]").forEach(b => b.addEventListener("click", () => {
+    const ta = $("setExtras");
+    const line = SAMPLE_EXTRAS[Number(b.dataset.addsample)];
+    if (ta.value.includes(line.split("|")[1].trim())) return toast("Already in the box.", true);
+    ta.value = (ta.value.trim() ? ta.value.trim() + "\n" : "") + line;
+    toast("Added — hit Save settings to make it live.");
+  }));
+  document.querySelectorAll("[data-penalty]").forEach(b => b.addEventListener("click", () => openPenalty(b.dataset.penalty)));
+  document.querySelectorAll("[data-unpen]").forEach(b => b.addEventListener("click", () => {
+    const [id, i] = b.dataset.unpen.split("|");
+    removePenalty(id, Number(i));
   }));
   document.querySelectorAll("[data-logpay]").forEach(b => b.addEventListener("click", () => openLogPayment(b.dataset.logpay)));
   document.querySelectorAll("[data-unpay]").forEach(b => b.addEventListener("click", () => undoPayment(b.dataset.unpay)));

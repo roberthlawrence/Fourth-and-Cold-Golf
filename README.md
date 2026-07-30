@@ -1,4 +1,4 @@
-# 4th & Cold Golf Classic
+# Fourth and Cold Golf Open
 
 Registration site for the 2-Man Scramble at Mustang Creek Country Club (1102 Beech St, Taylor, TX 76574). Same stack as the squares board and chip draw: GitHub Pages + Firebase, free at this scale, phone-first.
 
@@ -62,3 +62,12 @@ From then on, any file committed in GitHub goes live in a minute or two.
 - **Pairing**: suggested matches appear automatically when someone's requested partner signs up. Otherwise tap two players → **Pair selected**. When registration wraps, hit **⚡ Assign teams** to auto-pair everyone left by handicap — you review the proposed teams before locking in.
 - **Holes**: the day before, Admin tab → Hole assignments → pick 1A–18B per team. Shows instantly on the public roster.
 - **Closing**: flip **Registration closed** in settings, or set **Max players** and let it lock itself at 0 spots left.
+
+## Day-of live scoring
+
+1. Admin tab → **Live scoring** → flip **Scoring open** at the shotgun start. Everyone sees the red LIVE banner.
+2. Players open the **Live** tab, tap **This is my team** once (either partner can score), then enter each hole with the big +/− stepper. The app knows their starting hole and walks the loop in order, using the Mustang Creek pars (editable in Settings).
+3. Leaderboard shows `Team Name (T3) · −4 thru 12 (S7A)` live for everyone, ranked with ties, plus penalty / mulligan / behind-pace chips and a "last updated" stamp per team.
+4. **Accountability:** every entry is timestamped and audit-logged with who typed it. Teams more than the pace threshold (default 3 holes) behind the field median get a public ⏳ flag; 4+ holes entered inside 3 minutes gets a 📦 bulk-entry flag in the admin table. Admins assess penalty strokes (preset +2 pace penalty with note) — penalties add to the score, show publicly, and stay logged for end-of-day committee decisions.
+5. **Contest holes:** Settings → pick a course hole for 💪 Long drive and 🎯 Closest to the pin. They show as a card on the Live tab, get flagged in purple/blue right in the score-entry box when a team reaches that hole, and are ringed on every scorecard grid.
+6. **Day-of extras (optional):** Settings has an extras box, one line each — `emoji | name | price | unit | max per team | note`. The box starts empty (extras off). Four sample ideas — Mulligan, Putt string, 150-yd drop, Red tee pass — sit under the box with a ＋ button to add each with one tap; save settings to go live. Sell for cash/Venmo, log the money under Payments, tap **Set** on the team in Live scoring to record what they bought. Players record usage right on the hole they use it — leaderboard shows remaining, the scorecard marks the hole, and everything's audited.

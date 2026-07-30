@@ -66,7 +66,7 @@ service cloud.firestore {
         && request.resource.data.name.size() >= 3;
       allow update: if isFinAdmin()
         || (signedIn()
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'uid']));
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'uid', 'myTeamId']));
       allow delete: if isFullAdmin();
     }
 
@@ -109,7 +109,9 @@ service cloud.firestore {
             && request.resource.data.players is list);
       allow update: if isFinAdmin()
         || (signedIn()
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players']));
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['players', 'customName', 'scores', 'scoreTimes',
+                           'extraUses', 'lastScoreAt', 'lastScoreBy', 'updatedAt']));
       allow delete: if isFinAdmin()
         || (signedIn() && regOpen());
     }
