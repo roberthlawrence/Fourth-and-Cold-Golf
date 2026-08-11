@@ -1327,7 +1327,6 @@ function myScoringHtml() {
       <div class="entry-cols">
         ${HOLE_INFO[ph] ? `<button class="entry-img" data-holezoom="${ph}"><img src="${holeImgSrc(ph)}" alt="hole ${ph}" loading="lazy"><span>tap to zoom</span></button>` : "<span></span>"}
         <div class="entry-right">
-          ${extrasList().some(x => extraPurchased(t, x.id) > 0) ? `<div class="use-tally">${extrasList().filter(x => extraPurchased(t, x.id) > 0).map(x => `${x.emoji} <b>${extraLeft(t, x.id)}</b>${x.unit === "each" ? "" : esc(x.unit)} left`).join(" · ")}</div>` : ""}
           <div class="score-label">⛳ YOUR SCORE — HOLE #${ph}</div>
           <div class="stepper">
             <button class="step-btn" id="scMinus">−</button>
@@ -1376,14 +1375,13 @@ function extraControlsHtml(t, seq, prefix) {
     const avail = extraLeft(t, x.id) + cur;
     if (avail <= 0) return;
     if (x.unit === "each") {
-      html += `<label class="mull-row">${x.emoji}
+      html += `<label class="mull-row"><span class="mr-name">${x.emoji} ${esc(x.name)}</span>
         <select class="mull-n" data-exuse="${x.id}" data-exprefix="${prefix}">
           ${Array.from({ length: avail + 1 }, (_, i) => `<option value="${i}" ${i === cur ? "selected" : ""}>${i}</option>`).join("")}
-        </select> ${esc(x.name)}${avail > 1 || cur ? "" : ""} <span class="muted small">(${avail} avail)</span></label>`;
+        </select><span class="mr-avail">${avail} avail</span></label>`;
     } else {
-      html += `<label class="mull-row">${x.emoji} ${esc(x.name)} — ${esc(x.unit)} used this hole:
-        <input class="mull-ft" inputmode="numeric" pattern="[0-9]*" data-exuse="${x.id}" data-exprefix="${prefix}" value="${cur || ""}" placeholder="0">
-        <span class="muted small">whole ${esc(x.unit)} · ${avail} left</span></label>`;
+      html += `<label class="mull-row"><span class="mr-name">${x.emoji} ${esc(x.name)}</span>
+        <input class="mull-ft" inputmode="numeric" pattern="[0-9]*" data-exuse="${x.id}" data-exprefix="${prefix}" value="${cur || ""}" placeholder="0"><span class="mr-avail">${esc(x.unit)} · ${avail} left</span></label>`;
     }
   });
   return html;

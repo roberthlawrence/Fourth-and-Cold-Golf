@@ -355,3 +355,21 @@ main{padding:8px 14px}
 .step-rel.rel-over{ color:#7FC98F; }
 .xpay-team{ background:var(--smoke-3); border:1px solid var(--line); border-radius:10px; padding:8px 10px; margin-top:8px; color:var(--white); }
 .xpay-head{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
+
+
+/* ============ entry panel phone-fit ============ */
+.entry-cols{ grid-template-columns:92px 1fr; }
+.entry-img{ position:relative; height:290px; align-self:start; }
+.entry-img img{ width:100%; height:100%; object-fit:cover; object-position:top center; }
+.entry-img span{ position:absolute; bottom:0; left:0; right:0; }
+.entry-right{ gap:10px; min-width:0; }
+.score-label{ margin-top:0; }
+.entry-right .stepper{ gap:12px; }
+.entry-right .step-btn{ width:46px; height:46px; font-size:1.4rem; }
+.step-val{ font-size:2.2rem; min-width:40px; }
+.mull-row{ display:grid; grid-template-columns:1fr auto auto; align-items:center; gap:8px; margin:0; text-align:left; font-size:.85rem; }
+.mr-name{ font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mr-avail{ font-size:.72rem; color:#8C9E90; white-space:nowrap; }
+.mull-ft{ width:58px; }
+.entry-right .btn-block{ margin-top:2px; }
+@media(max-width:380px){ .entry-cols{ grid-template-columns:76px 1fr; } .entry-img{ height:250px; } }
