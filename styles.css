@@ -254,3 +254,55 @@ main{padding:8px 14px}
 .contest-flag.cp { background:#0E6B8C; color:#fff; }
 .sg-contest { box-shadow: inset 0 0 0 2px #B08BD0; }
 .sg-cmark { position:absolute; bottom:1px; right:2px; font-size:.6rem; }
+
+/* ============ hole images & zoom viewer ============ */
+.hole-peek { display:flex; align-items:center; gap:10px; width:100%; margin:0 0 12px; padding:8px; border:1px solid #DAD2C6; border-radius:10px; background:#fff; cursor:pointer; font-family:inherit; }
+.hole-peek img { width:44px; height:88px; object-fit:cover; object-position:top; border-radius:6px; }
+.hole-peek span { font-weight:700; color:var(--smoke); font-size:.85rem; text-align:left; }
+
+.hole-guide { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.hg-cell { position:relative; border:1px solid #DAD2C6; border-radius:10px; overflow:hidden; padding:0; background:#fff; cursor:pointer; font-family:inherit; }
+.hg-cell img { width:100%; height:130px; object-fit:cover; object-position:top; display:block; }
+.hg-num { position:absolute; top:5px; left:6px; background:var(--smoke); color:var(--gold, #FFC53D); font-weight:800; font-size:.75rem; padding:2px 7px; border-radius:7px; }
+.hg-meta { display:block; font-size:.68rem; font-weight:700; color:#6E665C; padding:4px 2px; }
+
+#holeZoom { position:fixed; inset:0; z-index:200; background:rgba(22,17,13,.96); display:flex; flex-direction:column; }
+.hz-top { display:flex; align-items:center; gap:10px; padding:12px 14px; background:var(--smoke); color:#fff; }
+.hz-title { font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:1.3rem; color:var(--gold, #FFC53D); }
+.hz-sub { color:#fff; font-size:.85rem; margin-left:6px; }
+.hz-tees { margin-left:auto; font-weight:700; font-size:.85rem; display:flex; align-items:center; gap:6px; }
+.td { width:11px; height:11px; border-radius:50%; display:inline-block; margin-left:8px; }
+.td-b { background:#4A7CC7; } .td-w { background:#EBEBEB; } .td-r { background:#C43A34; }
+.hz-close { background:none; border:none; color:#fff; font-size:1.4rem; padding:4px 8px; cursor:pointer; }
+.hz-stage { flex:1; overflow:hidden; display:flex; align-items:center; justify-content:center; touch-action:none; }
+.hz-stage img { max-height:100%; max-width:100%; transform-origin:center; transition:transform .05s linear; user-select:none; -webkit-user-drag:none; }
+
+/* ============ rules, shop, wheel ============ */
+.rules-body { white-space:normal; line-height:1.55; color:var(--smoke); max-height:55vh; overflow-y:auto; padding:4px 2px; }
+.deal-band { background:linear-gradient(90deg,#BF5700,#FFC53D); color:#fff; font-weight:800; text-align:center; border-radius:8px; padding:7px; margin:6px 0 4px; letter-spacing:.03em; }
+.shop-row { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid #EFE9DF; }
+.shop-row .extra-info { flex:1; }
+.shop-list { margin-top:12px; background:#F7F3EB; border-radius:10px; padding:10px 12px; }
+.shop-item { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 0; border-bottom:1px dashed #E2DACC; font-size:.86rem; }
+.shop-item:last-child { border-bottom:none; }
+.shop-right { display:flex; align-items:center; gap:6px; white-space:nowrap; font-weight:700; }
+.shop-won { background:#FFF7E2; border-radius:6px; padding-left:4px; padding-right:4px; }
+.shop-due { margin-top:10px; font-size:1.05rem; text-align:center; }
+.draw-reveal { text-align:center; font-size:2.4rem; line-height:1.3; margin:14px 0; }
+.draw-reveal b { font-size:1.4rem; color:var(--smoke); }
+.use-tally { background:#FFF7E2; border:1px solid #EAD9A8; border-radius:8px; padding:6px 10px; margin:8px 0 4px; font-weight:700; color:#7A5A12; font-size:.9rem; }
+.win-log { display:flex; flex-direction:column; gap:8px; }
+.win-row { display:flex; gap:10px; align-items:center; background:#fff; border:1px solid #E5DED4; border-radius:10px; padding:8px 10px; }
+.win-p { font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:1.15rem; color:#BF5700; min-width:36px; }
+.drawings-box { background:#F4F0E8; border:1px solid #DAD2C6; border-radius:10px; padding:10px 12px; margin-top:10px; }
+
+#prizeWheel { position:fixed; inset:0; z-index:300; background:rgba(22,17,13,.97); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:18px; }
+.pw-head { color:#fff; font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:1.5rem; letter-spacing:.05em; display:flex; align-items:center; gap:10px; }
+.pw-sub { color:#B7AEA2; font-size:.85rem; margin:6px 0 14px; }
+.pw-stage { position:relative; width:min(84vw,360px); }
+.pw-pointer { position:absolute; top:-14px; left:50%; transform:translateX(-50%); color:#FFC53D; font-size:1.6rem; z-index:2; text-shadow:0 2px 4px rgba(0,0,0,.6); }
+.pw-stage svg { width:100%; display:block; filter:drop-shadow(0 6px 18px rgba(0,0,0,.5)); }
+.pw-result { margin-top:16px; width:min(84vw,360px); }
+.pw-win { background:#FAF6F0; border-radius:14px; padding:16px; text-align:center; font-size:1.05rem; color:#201A16; animation:pwpop .4s ease-out; }
+.pw-win.pw-mine { background:linear-gradient(160deg,#FFC53D,#FFE9B0); font-size:1.15rem; }
+@keyframes pwpop { 0%{transform:scale(.6);opacity:0} 100%{transform:scale(1);opacity:1} }

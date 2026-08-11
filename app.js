@@ -33,8 +33,12 @@ const S = {
   regs: {},            // id -> registration
   teams: {},           // id -> team
   payments: {},        // id -> payment (admins only)
+  purchases: {},       // id -> extra purchase (chips for prize hat)
+  draws: {},           // id -> prize draw
+  shownDraws: {},      // draw ids already animated on this device
   audit: [],           // recent audit lines (full admin only)
   activeTab: "register",
+  deepExtras: new URLSearchParams(location.search).has("extras"),
   pairSel: [],         // selected reg ids in pairing tool
   unsub: { payments: null, audit: null }
 };
@@ -100,6 +104,14 @@ function defaultConfig(bootEmail) {
     extrasLines: "",
     contestLD: 0,   // physical hole # for long drive (0 = none)
     contestCP: 0,   // physical hole # for closest to the pin (0 = none)
+    rulesText: "",
+    rulesVersion: "",
+    extrasMode: "select",   // "select" = pick your extra, "draw" = random draw
+    drawPrice: 10,          // flat price per random draw (draw mode)
+    dealBuy: 0,             // buy N ...
+    dealFree: 0,            // ... get M free draws (0/0 = no deal)
+    spinSeconds: 10,        // wheel spin time (matches the chips game)
+    scoringTest: false,     // admins-only live scoring test
     updatedAt: nowIso()
   };
 }
@@ -137,6 +149,11 @@ function startHole(t){ const n = parseInt(t?.hole); return (n >= 1 && n <= pars(
 function physHole(t, seq) { return ((startHole(t) - 1 + (seq - 1)) % pars().length) + 1; }
 function parFor(t, seq)   { return pars()[physHole(t, seq) - 1]; }
 function relFmt(n) { return n === 0 ? "E" : (n > 0 ? "+" + n : String(n)); }
+function isAdminViewer() { return !!(S.isFull || S.isFin); }
+function scoringLive() {
+  const c = S.config || {};
+  return !!(c.scoringOpen || (c.scoringTest && isAdminViewer()));
+}
 
 function teamScore(t) {
   let played = 0, rel = 0, strokes = 0;
@@ -179,7 +196,14 @@ function extrasList() {
     };
   }).filter(Boolean);
 }
-function extraPurchased(t, id) { return Number((t.extrasPurchased || {})[id] || 0); }
+function teamPurchases(teamId) {
+  return Object.values(S.purchases).filter(p => p.teamId === teamId);
+}
+function extraPurchased(t, id) {
+  const manual = Number((t.extrasPurchased || {})[id] || 0);
+  const bought = teamPurchases(t.id).filter(p => p.extraId === id).reduce((a, p) => a + Number(p.amt || 0), 0);
+  return manual + bought;
+}
 function extraUsed(t, id) {
   return (t.extraUses || []).filter(u => u.id === id).reduce((a, u) => a + Number(u.amt || 0), 0);
 }
@@ -208,6 +232,20 @@ function agoFmt(iso) {
   if (m < 60) return m + "m ago";
   return Math.floor(m / 60) + "h " + (m % 60) + "m ago";
 }
+// Mustang Creek hole reference (yardages/hcp for the hole guide; pars live in config)
+const HOLE_INFO = {
+  1: { hcp: 10, blue: 349, white: 345, red: 324 },
+  2: { hcp: 18, blue: 298, white: 288, red: 255 },
+  3: { hcp: 3,  blue: 173, white: 160, red: 180 },
+  4: { hcp: 11, blue: 148, white: 143, red: 117 },
+  5: { hcp: 5,  blue: 487, white: 450, red: 340 },
+  6: { hcp: 16, blue: 132, white: 120, red: 115 },
+  7: { hcp: 8,  blue: 491, white: 488, red: 380 },
+  8: { hcp: 12, blue: 325, white: 272, red: 294 },
+  9: { hcp: 4,  blue: 374, white: 320, red: 244 }
+};
+function holeImgSrc(ph) { return `holes/hole-${ph}.jpg`; }
+
 function myTeam() {
   if (S.me?.myTeamId && S.teams[S.me.myTeamId]) return S.teams[S.me.myTeamId];
   // fall back: a team containing one of my registrations
@@ -283,6 +321,17 @@ function subscribeAll() {
 }
 
 function subscribePayments() {
+  onSnapshot(collection(db, "extraPurchases"), (qs) => {
+    S.purchases = {};
+    qs.forEach(d => S.purchases[d.id] = { id: d.id, ...d.data() });
+    renderAll();
+  });
+  onSnapshot(collection(db, "draws"), (qs) => {
+    S.draws = {};
+    qs.forEach(d => S.draws[d.id] = { id: d.id, ...d.data() });
+    maybeAnimateDraw();
+    renderAll();
+  });
   S.unsub.payments = onSnapshot(collection(db, "payments"), (qs) => {
     S.payments = {};
     qs.forEach(d => S.payments[d.id] = { id: d.id, ...d.data() });
@@ -418,6 +467,13 @@ function renderAll() {
   if (S.activeTab === "register") renderRegister();
   if (S.activeTab === "roster")   renderRoster();
   if (S.activeTab === "live")     renderLive();
+  if (S.deepExtras && S.me && S.config) {
+    S.deepExtras = false;
+    setTimeout(() => {
+      document.querySelector('[data-tab="live"]')?.click();
+      setTimeout(() => $("extrasShop")?.scrollIntoView({ behavior: "smooth" }), 400);
+    }, 300);
+  }
   if (S.activeTab === "admin")    renderAdmin();
 }
 
@@ -823,19 +879,55 @@ function renderLive() {
   const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
   let html = "";
 
-  if (!c.scoringOpen) {
+  if (!scoringLive()) {
     html += `<div class="card"><div class="card-title"><span class="flag">🔴</span> Live scoring</div>
-      <p class="muted">Scoring opens on event day. Check back at the shotgun start — the leaderboard will be right here.</p></div>`;
-    $("tab-live").innerHTML = html + contestsHtml() + extrasSaleHtml() + leaderboardHtml(teams, false);
+      <p class="muted">Scoring opens on event day. Check back at the shotgun start — the leaderboard will be right here.</p>
+      ${c.rulesText ? `<button class="btn btn-ghost btn-block" id="rulesBtn" style="margin-top:8px">📜 Tournament rules</button>` : ""}</div>`;
+    $("tab-live").innerHTML = html + extrasShopHtml() + contestsHtml() + extrasSaleHtml() + prizeWinnersHtml() + holeGuideHtml() + leaderboardHtml(teams, false);
+    wireHoleZoom(); wireShop(); wireRulesBtn();
+    maybeShowRules();
     return;
   }
 
+  if (c.scoringTest && !c.scoringOpen) {
+    html += `<div class="card" style="border:2px dashed #B08BD0"><b>🧪 TEST MODE</b> — only admins can see live scoring right now. Flip it off in Admin → Live scoring and all test scores reset automatically.</div>`;
+  }
+  if (c.rulesText) html += `<button class="btn btn-ghost btn-block" id="rulesBtn" style="margin-bottom:10px">📜 Tournament rules</button>`;
   html += myScoringHtml();
   html += leaderboardHtml(teams, true);
+  html += extrasShopHtml();
+  html += prizeWinnersHtml();
   html += contestsHtml();
   html += extrasSaleHtml();
+  html += holeGuideHtml();
   el.innerHTML = html;
-  wireLive();
+  wireLive(); wireShop(); wireRulesBtn();
+  maybeShowRules();
+}
+
+// ---------------------------------------------------------------------
+// RULES
+// ---------------------------------------------------------------------
+function wireRulesBtn() { $("rulesBtn")?.addEventListener("click", () => openRules(false)); }
+function maybeShowRules() {
+  const c = S.config || {};
+  if (!scoringLive() || !c.rulesText) return;
+  const ver = c.rulesVersion || "v1";
+  if (localStorage.getItem("fcgolf_rulesAck") === ver) return;
+  openRules(true);
+}
+function openRules(mustAck) {
+  const c = S.config || {};
+  openModal(`
+    <div class="modal-title">📜 Tournament rules</div>
+    <div class="rules-body">${esc(c.rulesText).replace(/\n/g, "<br>")}</div>
+    <div class="modal-actions">
+      <button class="btn btn-primary btn-block" id="rulesOk">${mustAck ? "Got it — I've read the rules" : "Close"}</button>
+    </div>`);
+  $("rulesOk").addEventListener("click", () => {
+    localStorage.setItem("fcgolf_rulesAck", c.rulesVersion || "v1");
+    closeModal();
+  });
 }
 
 function leaderboardHtml(teams, open) {
@@ -886,6 +978,23 @@ function contests() {
   if (c.contestCP >= 1) out.push({ hole: Number(c.contestCP), emoji: "🎯", name: "Closest to the pin", cls: "cp" });
   return out;
 }
+function holeGuideHtml() {
+  let cells = "";
+  for (let ph = 1; ph <= pars().length; ph++) {
+    if (!HOLE_INFO[ph]) continue;
+    const inf = HOLE_INFO[ph];
+    cells += `<button class="hg-cell" data-holezoom="${ph}">
+      <img src="${holeImgSrc(ph)}" alt="hole ${ph}" loading="lazy">
+      <span class="hg-num">#${ph}</span>
+      <span class="hg-meta">Par ${pars()[ph-1]} · ${inf.white}y</span>
+    </button>`;
+  }
+  if (!cells) return "";
+  return `<div class="card"><div class="card-title"><span class="flag">🗺</span> Hole guide</div>
+    <div class="hole-guide">${cells}</div>
+    <p class="muted small" style="margin-top:8px">Tap any hole — pinch to zoom, drag to pan. Gold ring = green, white box = tee.</p></div>`;
+}
+
 function contestsHtml() {
   const list = contests();
   if (!list.length) return "";
@@ -894,9 +1003,268 @@ function contestsHtml() {
     <p class="muted small" style="margin-top:6px">Winners called at the tent after the round — markers are on the hole.</p></div>`;
 }
 
+
+
+// ---------------------------------------------------------------------
+// PRIZE WHEEL — synchronized spin (same 10s feel as the chips game)
+// ---------------------------------------------------------------------
+function chipHue(teamNumber) { return (Number(teamNumber) * 47) % 360; }
+
+function eligibleChips(beforePrize) {
+  return Object.values(S.purchases)
+    .filter(p => p.drawnPrize == null || (beforePrize != null && p.drawnPrize >= beforePrize))
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+}
+
+function maybeAnimateDraw() {
+  const now = Date.now();
+  Object.values(S.draws).forEach(d => {
+    if (S.shownDraws[d.id]) return;
+    const start = Date.parse(d.startAt || "");
+    const secs = Number(d.seconds || 10);
+    if (isNaN(start) || now > start + (secs + 20) * 1000) { S.shownDraws[d.id] = true; return; }  // too old
+    S.shownDraws[d.id] = true;
+    openWheel(d, false);
+  });
+}
+
+function openWheel(d, isTest) {
+  const chips = isTest ? d.chips : eligibleChips(d.prizeNumber);
+  if (!chips.length) return;
+  const targetIdx = Math.max(0, chips.findIndex(c => c.id === d.chipId));
+  const myKey = S.me?.id;
+  const n = chips.length;
+  const segAngle = 360 / n;
+
+  // build SVG wheel
+  let segs = "";
+  chips.forEach((c, i) => {
+    const a0 = i * segAngle - 90, a1 = (i + 1) * segAngle - 90;
+    const large = segAngle > 180 ? 1 : 0;
+    const x0 = 100 + 96 * Math.cos(a0 * Math.PI / 180), y0 = 100 + 96 * Math.sin(a0 * Math.PI / 180);
+    const x1 = 100 + 96 * Math.cos(a1 * Math.PI / 180), y1 = 100 + 96 * Math.sin(a1 * Math.PI / 180);
+    const mine = myKey && c.byKey === myKey || (S.me && myTeam() && c.teamId === myTeam().id);
+    segs += `<path d="M100,100 L${x0.toFixed(1)},${y0.toFixed(1)} A96,96 0 ${large} 1 ${x1.toFixed(1)},${y1.toFixed(1)} Z"
+      fill="hsl(${chipHue(c.teamNumber)},52%,${mine ? 52 : 40}%)" stroke="${mine ? "#FFC53D" : "#201A16"}" stroke-width="${mine ? 2.5 : 0.8}"/>`;
+  });
+
+  const old = $("prizeWheel"); if (old) old.remove();
+  const ov = document.createElement("div");
+  ov.id = "prizeWheel";
+  ov.innerHTML = `
+    <div class="pw-head"><span class="live-dot"></span> LIVE DRAW — PRIZE ${d.prizeNumber}${isTest ? " (TEST)" : ""}</div>
+    <p class="pw-sub">${n} chips in the hat · your team's slices are ringed in gold</p>
+    <div class="pw-stage">
+      <div class="pw-pointer">▼</div>
+      <svg viewBox="0 0 200 200" id="pwSvg">${segs}<circle cx="100" cy="100" r="20" fill="#201A16"/><text x="100" y="106" text-anchor="middle" fill="#FFC53D" font-size="13" font-weight="800">4&amp;C</text></svg>
+    </div>
+    <div class="pw-result hidden" id="pwResult"></div>`;
+  document.body.appendChild(ov);
+
+  const secs = Number(d.seconds || 10);
+  const elapsed = isTest ? 0 : Math.max(0, (Date.now() - Date.parse(d.startAt)) / 1000);
+  const remain = Math.max(0.5, secs - elapsed);
+  const targetDeg = 360 * 6 + (360 - (targetIdx * segAngle + segAngle / 2));
+  const svg = $("pwSvg");
+  svg.style.transition = `transform ${remain}s cubic-bezier(.12,.65,.08,1)`;
+  requestAnimationFrame(() => requestAnimationFrame(() => { svg.style.transform = `rotate(${targetDeg}deg)`; }));
+
+  setTimeout(() => {
+    const win = chips[targetIdx];
+    const mineWin = myTeam() && win.teamId === myTeam().id;
+    const r = $("pwResult");
+    if (r) {
+      r.classList.remove("hidden");
+      r.innerHTML = `<div class="pw-win ${mineWin ? "pw-mine" : ""}">
+        ${mineWin ? "🎉🎉 THAT'S YOU! 🎉🎉<br>" : "🏆 "}
+        <b>${esc(win.teamName || "Team " + win.teamNumber)}</b> (T${win.teamNumber})<br>
+        <span class="small">wins Prize ${d.prizeNumber} — ${win.emoji || "⭐"} ${esc(win.extraName)} chip${win.byName ? " bought by " + esc(win.byName) : ""}</span></div>
+        <button class="btn btn-gold btn-block" id="pwClose" style="margin-top:12px">${mineWin ? "LET'S GO! Close" : "Close"}</button>`;
+      $("pwClose").addEventListener("click", () => ov.remove());
+    }
+    setTimeout(() => { if (document.getElementById("prizeWheel") === ov && !$("pwResult")) ov.remove(); }, 60000);
+  }, remain * 1000 + 200);
+}
+
+async function adminDrawPrize() {
+  const chips = eligibleChips(null);
+  if (!chips.length) return toast("No chips in the hat yet.", true);
+  const n = Object.values(S.draws).reduce((m, d) => Math.max(m, Number(d.prizeNumber || 0)), 0) + 1;
+  const u = new Uint32Array(1); crypto.getRandomValues(u);
+  const win = chips[u[0] % chips.length];
+  const secs = Number(S.config.spinSeconds || 10);
+  try {
+    await updateDoc(doc(db, "extraPurchases", win.id), { drawnPrize: n });
+    await addDoc(collection(db, "draws"), {
+      prizeNumber: n, chipId: win.id, teamId: win.teamId, teamNumber: win.teamNumber,
+      teamName: win.teamName || "", extraName: win.extraName, emoji: win.emoji, byName: win.byName,
+      startAt: nowIso(), seconds: secs, ts: nowIso()
+    });
+    audit("prize_drawn", `Prize ${n} → T${win.teamNumber} (${win.extraName} chip, ${win.byName})`);
+  } catch (e) { toast(e.message, true); }
+}
+
+function testWheel() {
+  const fake = Array.from({ length: 10 }, (_, i) => ({
+    id: "t" + i, teamId: "t" + (i % 5), teamNumber: (i % 5) + 1,
+    teamName: ["Salty Dawgs", "Shank Bros", "Mulligang", "Fore Play", "Bogey Men"][i % 5],
+    extraName: ["Mulligan", "Putt string", "150-yd drop"][i % 3],
+    emoji: ["🎟", "🧵", "🪂"][i % 3], byName: "Test", byKey: null
+  }));
+  const u = new Uint32Array(1); crypto.getRandomValues(u);
+  openWheel({ prizeNumber: "TEST", chipId: fake[u[0] % fake.length].id, seconds: Number(S.config.spinSeconds || 10), chips: fake }, true);
+}
+
+// ---------------------------------------------------------------------
+// EXTRAS SHOP — buy in-app; every purchase is a chip in the prize hat
+// ---------------------------------------------------------------------
+function drawAmt(x) { return x.unit === "each" ? 1 : 10; }  // random draw grants 1 each / 10 ft
+
+function extrasShopHtml() {
+  const list = extrasList();
+  const t = myTeam();
+  if (!list.length || !t) return "";
+  const c = S.config || {};
+  const mode = c.extrasMode === "draw" ? "draw" : "select";
+  const mine = teamPurchases(t.id).sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+  const due = mine.filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0);
+  const dealOn = Number(c.dealBuy) > 0 && Number(c.dealFree) > 0;
+
+  let html = `<div class="card" id="extrasShop"><div class="card-title"><span class="flag">🛒</span> Get your extras — ${teamLabel(t)}</div>`;
+  if (dealOn) html += `<div class="deal-band">🔥 DEAL: buy ${c.dealBuy}, get ${c.dealFree} free draw${c.dealFree > 1 ? "s" : ""}!</div>`;
+
+  if (mode === "draw") {
+    html += `<p class="muted small" style="margin:6px 0 10px">Every draw is random — you might pull ${list.map(x => x.name).join(", ")}. Every chip you buy also goes in the hat for the prize drawings.</p>
+      <button class="btn btn-gold btn-block" id="shopDraw">🎲 Draw your extra (${list.map(x => esc(x.name)).join(" · ")}) — ${money(Number(c.drawPrice || 10))}</button>`;
+  } else {
+    html += `<p class="muted small" style="margin:6px 0 10px">Pick what you want — every purchase is also a chip in the hat for the prize drawings.</p>`;
+    list.forEach(x => {
+      const have = extraPurchased(t, x.id);
+      const capped = x.max && have >= x.max;
+      html += `<div class="shop-row">
+        <span class="extra-emoji">${x.emoji}</span>
+        <span class="extra-info"><b>${esc(x.name)}</b> — ${x.unit === "each" ? money(x.price) + " each" : money(x.price) + "/" + esc(x.unit) + " (sold in 10 " + esc(x.unit) + ")"}${x.max ? ` · max ${x.max}` : ""}</span>
+        <button class="btn btn-tiny ${capped ? "btn-ghost" : "btn-gold"}" data-shopbuy="${x.id}" ${capped ? "disabled" : ""}>${capped ? "Max" : "Add"}</button>
+      </div>`;
+    });
+  }
+
+  if (mine.length) {
+    html += `<div class="shop-list"><b class="small">Your team's chips (${mine.length} in the hat):</b>`;
+    mine.forEach(p => {
+      html += `<div class="shop-item ${p.drawnPrize ? "shop-won" : ""}">
+        <span>${p.emoji || "⭐"} ${esc(p.extraName)}${Number(p.amt) > 1 ? ` ×${p.amt}` : ""}${p.free ? ` <span class="chip chip-mull">FREE</span>` : ""}${p.drawnPrize ? ` 🏆 P${p.drawnPrize}` : ""}</span>
+        <span class="shop-right">${p.free ? "—" : money(Number(p.price || 0))} ${p.paid ? `<span class="pay-ok">PAID ✓</span>` : (p.uid === S.user?.uid ? `<button class="btn btn-tiny btn-ghost" data-unbuy="${p.id}">Undo</button>` : `<span class="muted small">due</span>`)}</span>
+      </div>`;
+    });
+    html += `</div>`;
+    if (due > 0) {
+      const vs = venmoList();
+      html += `<div class="shop-due">Total due: <b>${money(due)}</b></div>
+        ${vs.map(v => `<button class="btn btn-primary btn-block" data-payextras="${esc(v.handle)}" style="margin-top:6px">💸 PAY FOR MY EXTRAS — Venmo @${esc(v.handle)} ${money(due)}</button>`).join("")}
+        <p class="muted small" style="margin-top:6px">Pay at registration — a money admin will mark you PAID.</p>`;
+    }
+  }
+  return html + `</div>`;
+}
+
+function wireShop() {
+  const t = myTeam();
+  $("shopDraw")?.addEventListener("click", () => shopBuy(null, true));
+  document.querySelectorAll("[data-shopbuy]").forEach(b => b.addEventListener("click", () => shopBuy(b.dataset.shopbuy, false)));
+  document.querySelectorAll("[data-unbuy]").forEach(b => b.addEventListener("click", async () => {
+    try {
+      await deleteDoc(doc(db, "extraPurchases", b.dataset.unbuy));
+      audit("extra_purchase_undone", `by ${S.me?.name || "?"}`);
+      toast("Purchase removed.");
+    } catch (e) { toast(e.message, true); }
+  }));
+  document.querySelectorAll("[data-payextras]").forEach(b => b.addEventListener("click", () => {
+    if (!t) return;
+    const due = teamPurchases(t.id).filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0);
+    payVenmoNote(b.dataset.payextras, due, `${S.config.eventName} extras — T${t.number} ${S.me?.name || ""}`);
+  }));
+}
+
+function randPick(arr) {
+  const u = new Uint32Array(1); crypto.getRandomValues(u);
+  return arr[u[0] % arr.length];
+}
+
+async function shopBuy(extraId, isDraw, asFree) {
+  const t = myTeam(); if (!t) return toast("Claim your team first.", true);
+  const list = extrasList(); if (!list.length) return;
+  const c = S.config || {};
+  let x, amt, price;
+  if (isDraw || asFree) {
+    x = randPick(list);
+    amt = drawAmt(x);
+    price = asFree ? 0 : Number(c.drawPrice || 10);
+  } else {
+    x = list.find(e => e.id === extraId); if (!x) return;
+    amt = drawAmt(x);
+    price = x.unit === "each" ? Number(x.price) : Number(x.price) * amt;
+    if (x.max && extraPurchased(t, x.id) + (x.unit === "each" ? 1 : amt) > x.max * (x.unit === "each" ? 1 : amt))
+      { /* soft cap: compare in units purchased */ }
+    if (x.max && extraPurchased(t, x.id) >= x.max * (x.unit === "each" ? 1 : 1) && x.unit === "each") return toast(`Max ${x.max} ${x.name} per team.`, true);
+  }
+  try {
+    await addDoc(collection(db, "extraPurchases"), {
+      teamId: t.id, teamNumber: t.number, teamName: t.customName || (t.players || []).map(p => p.name).join(" & "),
+      uid: S.user?.uid || null, byKey: S.me?.id || null, byName: S.me?.name || "?",
+      extraId: x.id, extraName: x.name, emoji: x.emoji, amt, price,
+      free: !!asFree, paid: false, drawnPrize: null, ts: nowIso()
+    });
+    audit(asFree ? "extra_free_draw" : (isDraw ? "extra_drawn" : "extra_bought"),
+      `T${t.number}: ${amt}${x.unit === "each" ? "×" : x.unit} ${x.name}${asFree ? " (FREE)" : " " + money(price)} — ${S.me?.name || "?"}`);
+    if (isDraw || asFree) {
+      openModal(`<div class="modal-title center">${asFree ? "🎁 FREE DRAW!" : "🎲 You drew…"}</div>
+        <div class="draw-reveal">${x.emoji}<br><b>${esc(x.name)}</b>${amt > 1 ? ` — ${amt} ${esc(x.unit)}` : ""}</div>
+        <div class="modal-actions"><button class="btn btn-primary btn-block" id="mCancel">Nice!</button></div>`);
+      $("mCancel").addEventListener("click", closeModal);
+    } else {
+      toast(`${x.emoji} ${x.name} added — chip's in the hat!`);
+    }
+    // deal: every dealBuy paid chips earns dealFree free draws
+    const db_ = Number(c.dealBuy), df = Number(c.dealFree);
+    if (!asFree && db_ > 0 && df > 0) {
+      const paidCount = teamPurchases(t.id).filter(p => !p.free).length + 1; // incl this one (snapshot lag)
+      if (paidCount % db_ === 0) {
+        for (let i = 0; i < df; i++) await shopBuy(null, false, true);
+        toast(`🔥 Deal hit — ${df} free draw${df > 1 ? "s" : ""} added!`);
+      }
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+function payVenmoNote(handle, amount, noteText) {
+  const note = encodeURIComponent(noteText);
+  const amt = amount > 0 ? amount.toFixed(2) : "";
+  const deep = `venmo://paycharge?txn=pay&recipients=${encodeURIComponent(handle)}&amount=${amt}&note=${note}`;
+  const web  = `https://account.venmo.com/pay?recipients=${encodeURIComponent(handle)}&amount=${amt}&note=${note}`;
+  const t0 = Date.now();
+  window.location.href = deep;
+  setTimeout(() => { if (Date.now() - t0 < 1600) window.open(web, "_blank"); }, 1200);
+}
+
+// ---------------------------------------------------------------------
+// PRIZE WINNERS LOG
+// ---------------------------------------------------------------------
+function prizeWinnersHtml() {
+  const draws = Object.values(S.draws).sort((a, b) => (a.prizeNumber || 0) - (b.prizeNumber || 0));
+  if (!draws.length) return "";
+  let html = `<div class="card"><div class="card-title"><span class="flag">🎉</span> Prize drawing winners</div><div class="win-log">`;
+  draws.forEach(d => {
+    html += `<div class="win-row"><span class="win-p">P${d.prizeNumber}</span>
+      <span><b>${esc(d.teamName || "Team " + d.teamNumber)}</b> <span class="tnum">(T${d.teamNumber})</span><br>
+      <span class="muted small">${d.emoji || "⭐"} ${esc(d.extraName || "")} chip · bought by ${esc(d.byName || "?")}</span></span></div>`;
+  });
+  return html + `</div></div>`;
+}
+
 function extrasSaleHtml() {
   const list = extrasList();
-  if (!list.length) return "";
+  if (!list.length || myTeam()) return "";
   let html = `<div class="card"><div class="card-title"><span class="flag">🛒</span> Day-of extras — cash or Venmo at the tent</div><div class="extras-list">`;
   list.forEach(x => {
     html += `<div class="extra-row"><span class="extra-emoji">${x.emoji}</span>
@@ -935,11 +1303,13 @@ function myScoringHtml() {
     html += `<div class="entry-box">
       ${cs.map(x => `<div class="contest-flag ${x.cls}">${x.emoji} ${x.name.toUpperCase()} HOLE — ${x.cls === "ld" ? "bombs away" : "stick it close"}</div>`).join("")}
       <div class="entry-head">Your hole <b>${seq}</b> of ${holesCount()} · course hole <b>#${ph}</b> · par <b>${par}</b></div>
+      ${HOLE_INFO[ph] ? `<button class="hole-peek" data-holezoom="${ph}"><img src="${holeImgSrc(ph)}" alt="hole ${ph}" loading="lazy"><span>⛳ View hole #${ph} — tap to zoom</span></button>` : ""}
       <div class="stepper">
         <button class="step-btn" id="scMinus">−</button>
         <span class="step-val" id="scVal" data-val="${par}">${par}</span>
         <button class="step-btn" id="scPlus">+</button>
       </div>
+      ${extrasList().some(x => extraPurchased(t, x.id) > 0) ? `<div class="use-tally">${extrasList().filter(x => extraPurchased(t, x.id) > 0).map(x => `${x.emoji} <b>${extraLeft(t, x.id)}</b>${x.unit === "each" ? "" : esc(x.unit)} left`).join(" · ")}</div>` : ""}
       ${extraControlsHtml(t, seq, "sc")}
       <button class="btn btn-primary btn-block" id="scSave">Save hole ${seq}</button>
     </div>`;
@@ -1007,6 +1377,69 @@ function collectExtraUses(prefix, t, seq) {
   return { uses, err };
 }
 
+function wireHoleZoom() {
+  document.querySelectorAll("[data-holezoom]").forEach(b => b.addEventListener("click", () => openHoleZoom(Number(b.dataset.holezoom))));
+}
+
+function openHoleZoom(ph) {
+  const inf = HOLE_INFO[ph] || {};
+  const par = pars()[ph - 1];
+  const old = $("holeZoom"); if (old) old.remove();
+  const ov = document.createElement("div");
+  ov.id = "holeZoom";
+  ov.innerHTML = `
+    <div class="hz-top">
+      <div class="hz-title">HOLE ${ph} <span class="hz-sub">PAR ${par} · HCP ${inf.hcp ?? "–"}</span></div>
+      <div class="hz-tees"><i class="td td-b"></i>${inf.blue ?? "–"} <i class="td td-w"></i>${inf.white ?? "–"} <i class="td td-r"></i>${inf.red ?? "–"}</div>
+      <button class="hz-close" id="hzClose">✕</button>
+    </div>
+    <div class="hz-stage" id="hzStage"><img src="${holeImgSrc(ph)}" id="hzImg" alt="hole ${ph}" draggable="false"></div>`;
+  document.body.appendChild(ov);
+  $("hzClose").addEventListener("click", () => ov.remove());
+
+  const img = $("hzImg"), stage = $("hzStage");
+  let scale = 1, tx = 0, ty = 0;
+  const ptrs = new Map();
+  let start = null, lastTap = 0;
+  const apply = () => { img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; };
+  const clamp = () => {
+    scale = Math.min(6, Math.max(1, scale));
+    const r = stage.getBoundingClientRect();
+    const mx = (img.offsetWidth * scale - r.width) / 2 + 60, my = (img.offsetHeight * scale - r.height) / 2 + 60;
+    tx = Math.min(Math.max(tx, -Math.max(mx, 60)), Math.max(mx, 60));
+    ty = Math.min(Math.max(ty, -Math.max(my, 60)), Math.max(my, 60));
+  };
+  stage.addEventListener("pointerdown", e => {
+    stage.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 1) {
+      const now = Date.now();
+      if (now - lastTap < 300) { scale = scale > 1.2 ? 1 : 2.6; if (scale === 1) { tx = ty = 0; } clamp(); apply(); }
+      lastTap = now;
+      start = { x: e.clientX, y: e.clientY, tx, ty };
+    } else if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()];
+      start = { d: Math.hypot(a.x - b.x, a.y - b.y), scale, tx, ty };
+    }
+  });
+  stage.addEventListener("pointermove", e => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 1 && start && start.d == null) {
+      tx = start.tx + (e.clientX - start.x); ty = start.ty + (e.clientY - start.y);
+      clamp(); apply();
+    } else if (ptrs.size === 2 && start && start.d != null) {
+      const [a, b] = [...ptrs.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      scale = start.scale * (d / start.d);
+      clamp(); apply();
+    }
+  });
+  const up = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) start = ptrs.size === 1 ? { x: [...ptrs.values()][0].x, y: [...ptrs.values()][0].y, tx, ty } : null; };
+  stage.addEventListener("pointerup", up); stage.addEventListener("pointercancel", up);
+  apply();
+}
+
 function wireLive() {
   $("claimBtn")?.addEventListener("click", async () => {
     const id = $("claimTeam").value;
@@ -1050,6 +1483,7 @@ function wireLive() {
     const t = myTeam(); if (!t) return;
     openEditScore(t, Number(b.dataset.editscore));
   }));
+  wireHoleZoom();
 }
 
 async function saveHole(t, seq, strokes, uses, isEdit) {
@@ -1319,6 +1753,18 @@ function adminScoringHtml() {
     <div class="toggle-row">
       <div><b>Scoring open</b><br><span class="muted small">Flip on at the shotgun start. Shows the LIVE banner to everyone.</span></div>
       <label class="switch"><input type="checkbox" id="setScoring" ${c.scoringOpen ? "checked" : ""}><span class="slider"></span></label>
+    </div>
+    <div class="toggle-row">
+      <div><b>🧪 Scoring test mode</b><br><span class="muted small">Live tab works for admins only. Turning OFF wipes all scores &amp; extra-usage automatically.</span></div>
+      <label class="switch"><input type="checkbox" id="setScoringTest" ${c.scoringTest ? "checked" : ""}><span class="slider"></span></label>
+    </div>
+    <div class="drawings-box">
+      <b>🎡 Prize drawings</b> — ${eligibleChips(null).length} chip${eligibleChips(null).length === 1 ? "" : "s"} in the hat
+      <div class="add-row" style="margin-top:8px">
+        <button class="btn btn-gold" id="drawPrizeBtn" style="flex:1">🎡 Draw for prize ${Object.values(S.draws).reduce((m, d) => Math.max(m, Number(d.prizeNumber || 0)), 0) + 1}</button>
+        <button class="btn btn-ghost" id="testWheelBtn">🧪 Test wheel</button>
+      </div>
+      <p class="muted small" style="margin-top:6px">Everyone's phone gets the ${Number(c.spinSeconds || 10)}-second wheel. Drawn chips leave the hat. Test wheel is local — only you see it, nothing is saved.</p>
     </div>`;
   if (!teams.length) return html + `<p class="muted" style="margin-top:8px">Teams will appear here once they're set.</p></div>`;
   const anyExtras = extrasList().length > 0;
@@ -1353,14 +1799,38 @@ function openExtrasModal(teamId) {
     <div class="modal-title">Extras — T${t.number}${t.customName ? " " + esc(t.customName) : ""}</div>
     <p class="muted small">Amount bought per team${list.some(x => x.max) ? " (maxes shown)" : ""}. Money gets logged under Payments.</p>
     ${list.map(x => `
-      <label class="field-label">${x.emoji} ${esc(x.name)} — ${money(x.price)}${x.unit === "each" ? " each" : "/" + esc(x.unit)}${x.max ? ` · max ${x.max}` : ""}</label>
-      <input class="field" inputmode="numeric" id="exbuy_${x.id}" value="${extraPurchased(t, x.id) || ""}" placeholder="0">
-      <p class="muted small" style="margin:2px 0 8px">used so far: ${extraUsed(t, x.id)}</p>`).join("")}
+      <label class="field-label">${x.emoji} ${esc(x.name)} — manual/cash amount (app purchases add on top)</label>
+      <input class="field" inputmode="numeric" id="exbuy_${x.id}" value="${Number((t.extrasPurchased || {})[x.id] || 0) || ""}" placeholder="0">
+      <p class="muted small" style="margin:2px 0 8px">total ${extraPurchased(t, x.id)} · used ${extraUsed(t, x.id)}</p>`).join("")}
+    ${(() => {
+      const mine = teamPurchases(t.id).sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+      if (!mine.length) return "";
+      const due = mine.filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0);
+      return `<div class="shop-list"><b class="small">App purchases (${mine.length} chips${due ? ` · ${money(due)} unpaid` : " · all paid"}):</b>
+        ${mine.map(p => `<div class="shop-item"><span>${p.emoji} ${esc(p.extraName)}${Number(p.amt) > 1 ? " ×" + p.amt : ""}${p.free ? " FREE" : ""} <span class="muted small">${esc(p.byName)}</span></span>
+          <span class="shop-right">${p.free ? "—" : money(Number(p.price || 0))}
+            ${p.free ? "" : `<button class="btn btn-tiny ${p.paid ? "btn-ghost" : "btn-gold"}" data-buypaid="${p.id}|${p.paid ? 0 : 1}">${p.paid ? "Unpay" : "Mark paid"}</button>`}
+            <button class="btn btn-tiny btn-ghost" data-buydel="${p.id}">✕</button></span></div>`).join("")}
+      </div>`;
+    })()}
     <div class="modal-actions">
       <button class="btn btn-ghost" id="mCancel">Cancel</button>
       <button class="btn btn-gold" id="exGo">Save</button>
     </div>`);
   $("mCancel").addEventListener("click", closeModal);
+  document.querySelectorAll("[data-buypaid]").forEach(b => b.addEventListener("click", async () => {
+    const [pid, to] = b.dataset.buypaid.split("|");
+    try {
+      await updateDoc(doc(db, "extraPurchases", pid), { paid: to === "1" });
+      audit(to === "1" ? "extras_paid" : "extras_unpaid", `purchase ${pid} T${t.number} by ${S.adminEmail}`);
+      toast(to === "1" ? "Marked paid." : "Marked unpaid.");
+      closeModal();
+    } catch (e) { toast(e.message, true); }
+  }));
+  document.querySelectorAll("[data-buydel]").forEach(b => b.addEventListener("click", async () => {
+    try { await deleteDoc(doc(db, "extraPurchases", b.dataset.buydel)); audit("extras_purchase_deleted", `T${t.number} by ${S.adminEmail}`); toast("Purchase deleted."); closeModal(); }
+    catch (e) { toast(e.message, true); }
+  }));
   $("exGo").addEventListener("click", async () => {
     const bought = {};
     let bad = null;
@@ -1544,6 +2014,19 @@ function adminSettingsHtml() {
       <div><label class="field-label">Holes each team plays</label><input class="field" id="setHoles" inputmode="numeric" value="${c.holesCount || 18}"></div>
       <div><label class="field-label">Pace flag — holes behind</label><input class="field" id="setPace" inputmode="numeric" value="${c.paceThreshold || 3}"></div>
     </div>
+    <label class="field-label">📜 Tournament rules — pop up for everyone when scoring goes live; Rules button after that</label>
+    <textarea class="field" id="setRules" rows="5" placeholder="1. Scramble format — both players tee off...\n2. ...">${esc(c.rulesText || "")}</textarea>
+    <div class="admin-grid" style="margin-top:12px">
+      <div><label class="field-label">Extras purchase mode</label>
+        <select class="field" id="setExtrasMode">
+          <option value="select" ${(c.extrasMode || "select") === "select" ? "selected" : ""}>Individual selection</option>
+          <option value="draw" ${c.extrasMode === "draw" ? "selected" : ""}>Random drawing</option>
+        </select></div>
+      <div><label class="field-label">Price per random draw</label><input class="field" id="setDrawPrice" inputmode="decimal" value="${c.drawPrice ?? 10}"></div>
+      <div><label class="field-label">Deal: buy N (0 = off)</label><input class="field" id="setDealBuy" inputmode="numeric" value="${c.dealBuy || 0}"></div>
+      <div><label class="field-label">…get M free draws</label><input class="field" id="setDealFree" inputmode="numeric" value="${c.dealFree || 0}"></div>
+      <div><label class="field-label">Wheel spin seconds</label><input class="field" id="setSpin" inputmode="numeric" value="${c.spinSeconds ?? 10}"></div>
+    </div>
     <label class="field-label">Day-of extras — one per line: emoji | name | price | unit | max per team | note<br><span class="muted small" style="font-weight:400">unit "each" = countable (mulligans, drops); "ft" etc = amount used per go (putt string). Delete a line to turn it off; empty box turns extras off.</span></label>
     <textarea class="field" id="setExtras" rows="3" placeholder="empty = no extras">${esc(c.extrasLines || "")}</textarea>
     <div class="samples-box">
@@ -1573,6 +2056,7 @@ function adminSettingsHtml() {
 }
 
 async function saveSettings() {
+  const c = S.config || {};
   const emails = (t) => t.split("\n").map(cleanEmail).filter(validEmail);
   const upd = {
     registrationClosed: $("setClosed").checked,
@@ -1591,6 +2075,13 @@ async function saveSettings() {
     holesCount: Math.max(1, parseInt($("setHoles").value) || 18),
     paceThreshold: Math.max(1, parseInt($("setPace").value) || 3),
     extrasLines: $("setExtras").value,
+    rulesText: $("setRules").value,
+    rulesVersion: ($("setRules").value.trim() !== (c.rulesText || "").trim()) ? nowIso() : (c.rulesVersion || ""),
+    extrasMode: $("setExtrasMode").value,
+    drawPrice: parseFloat($("setDrawPrice").value) || 10,
+    dealBuy: parseInt($("setDealBuy").value) || 0,
+    dealFree: parseInt($("setDealFree").value) || 0,
+    spinSeconds: Math.max(3, parseInt($("setSpin").value) || 10),
     contestLD: parseInt($("setLD").value) || 0,
     contestCP: parseInt($("setCP").value) || 0,
     parByHole: (() => {
@@ -1785,6 +2276,37 @@ function wireAdmin() {
       toast(`Team ${t.number} split — both players are back in the pairing pool.`);
     } catch (e) { toast(e.message, true); }
   }));
+  $("drawPrizeBtn")?.addEventListener("click", () => {
+    const nxt = Object.values(S.draws).reduce((m, d) => Math.max(m, Number(d.prizeNumber || 0)), 0) + 1;
+    openModal(`<div class="modal-title">🎡 Draw for prize ${nxt}?</div>
+      <p class="muted small">${eligibleChips(null).length} chips eligible. Every open phone gets the live wheel.</p>
+      <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-gold" id="mGo">Spin it</button></div>`);
+    $("mCancel").addEventListener("click", closeModal);
+    $("mGo").addEventListener("click", () => { closeModal(); adminDrawPrize(); });
+  });
+  $("testWheelBtn")?.addEventListener("click", testWheel);
+  $("setScoringTest")?.addEventListener("change", async (e) => {
+    try {
+      if (!e.target.checked) {
+        // turning OFF: reset all scoring data
+        const batch = writeBatch(db);
+        Object.values(S.teams).forEach(t => batch.update(doc(db, "teams", t.id), {
+          scores: {}, scoreTimes: {}, extraUses: [], lastScoreAt: null, lastScoreBy: null
+        }));
+        await batch.commit();
+        await updateDoc(doc(db, "config", "current"), { scoringTest: false, updatedAt: nowIso() });
+        audit("scoring_test_off", "test data reset");
+        toast("Test mode off — all test scores wiped clean.");
+        const testBuys = Object.values(S.purchases).length;
+        if (testBuys) toast(`Heads up: ${testBuys} extras purchase(s) exist — undo any test ones in the shop or Extras modal.`, true);
+      } else {
+        await updateDoc(doc(db, "config", "current"), { scoringTest: true, updatedAt: nowIso() });
+        audit("scoring_test_on", "by " + S.adminEmail);
+        toast("🧪 Test mode ON — only admins see live scoring.");
+      }
+    } catch (err) { toast(err.message, true); }
+  });
   $("setScoring")?.addEventListener("change", async (e) => {
     try {
       await updateDoc(doc(db, "config", "current"), { scoringOpen: e.target.checked, updatedAt: nowIso() });

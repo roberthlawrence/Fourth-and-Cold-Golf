@@ -118,6 +118,23 @@ service cloud.firestore {
 
     // ---- payments ------------------------------------------------
     // Financial + full admins only.
+    match /extraPurchases/{pid} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.teamId is string
+        && request.resource.data.price is number;
+      allow delete: if isFinAdmin()
+        || (signedIn()
+            && resource.data.paid != true
+            && resource.data.uid == request.auth.uid);
+      allow update: if isFinAdmin();
+    }
+
+    match /draws/{drawId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isFinAdmin();
+    }
+
     match /payments/{payId} {
       allow read, write: if isFinAdmin();
     }

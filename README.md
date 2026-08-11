@@ -71,3 +71,16 @@ From then on, any file committed in GitHub goes live in a minute or two.
 4. **Accountability:** every entry is timestamped and audit-logged with who typed it. Teams more than the pace threshold (default 3 holes) behind the field median get a public ⏳ flag; 4+ holes entered inside 3 minutes gets a 📦 bulk-entry flag in the admin table. Admins assess penalty strokes (preset +2 pace penalty with note) — penalties add to the score, show publicly, and stay logged for end-of-day committee decisions.
 5. **Contest holes:** Settings → pick a course hole for 💪 Long drive and 🎯 Closest to the pin. They show as a card on the Live tab, get flagged in purple/blue right in the score-entry box when a team reaches that hole, and are ringed on every scorecard grid.
 6. **Day-of extras (optional):** Settings has an extras box, one line each — `emoji | name | price | unit | max per team | note`. The box starts empty (extras off). Four sample ideas — Mulligan, Putt string, 150-yd drop, Red tee pass — sit under the box with a ＋ button to add each with one tap; save settings to go live. Sell for cash/Venmo, log the money under Payments, tap **Set** on the team in Live scoring to record what they bought. Players record usage right on the hole they use it — leaderboard shows remaining, the scorecard marks the hole, and everything's audited.
+
+## Hole images
+
+Upload the `holes/` folder (hole-1.jpg … hole-9.jpg) to the repo root. Players get a Hole guide grid on the Live tab and a hole preview in the score-entry box — tap opens full-screen with pinch-zoom/pan/double-tap. Gold ring = green, white box = tee. Update an image by replacing its file; names must stay `holes/hole-N.jpg`.
+
+## Rules, in-app extras shop, prize wheel, test modes (v3)
+
+- **Rules**: Settings → rules box. Pops up once per device when scoring goes live (re-pops if you edit rules); 📜 button on Live tab afterward.
+- **Shop**: players buy extras on the Live tab (their team must be claimed). Modes in Settings: Individual selection or Random drawing (flat draw price). Deal: buy N get M free draws. Undo until paid; PAY FOR MY EXTRAS deep-links Venmo with the exact total; money admins mark paid in the team's Extras modal (which also still takes manual/cash counts — app purchases add on top).
+- **Prize hat**: every purchase = one chip. Admin → Live scoring → 🎡 Draw for prize N: synchronized wheel on every phone (spin seconds in Settings, default 10 like the chips game), team slices colored, yours gold-ringed, winner announced big, logged under Prize drawing winners. Drawn chips can't win again.
+- **Test modes**: 🧪 Scoring test = Live tab admins-only; toggling OFF auto-wipes all scores/usage. 🧪 Test wheel = local-only spin with fake chips, nothing saved.
+- **QR**: qr-extras-card.png/pdf (4×6 print) → app opens straight to the shop (?extras=1).
+- **Deploy**: replace app.js, styles.css, README.md and re-publish firestore.rules (adds extraPurchases + draws collections). Nothing existing is touched — all new settings default safely and the settings form pre-fills from your live config.
