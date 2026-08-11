@@ -1328,9 +1328,10 @@ function myScoringHtml() {
         ${HOLE_INFO[ph] ? `<button class="entry-img" data-holezoom="${ph}"><img src="${holeImgSrc(ph)}" alt="hole ${ph}" loading="lazy"><span>tap to zoom</span></button>` : "<span></span>"}
         <div class="entry-right">
           ${extrasList().some(x => extraPurchased(t, x.id) > 0) ? `<div class="use-tally">${extrasList().filter(x => extraPurchased(t, x.id) > 0).map(x => `${x.emoji} <b>${extraLeft(t, x.id)}</b>${x.unit === "each" ? "" : esc(x.unit)} left`).join(" · ")}</div>` : ""}
+          <div class="score-label">⛳ YOUR SCORE — HOLE #${ph}</div>
           <div class="stepper">
             <button class="step-btn" id="scMinus">−</button>
-            <span class="step-val" id="scVal" data-val="${existing ?? par}">${existing ?? par}</span>
+            <span class="step-wrap"><span class="step-val" id="scVal" data-val="${existing ?? par}" data-par="${par}">${existing ?? par}</span><span class="step-rel" id="scRel">(${relFmt((existing ?? par) - par)})</span></span>
             <button class="step-btn" id="scPlus">+</button>
           </div>
           ${extraControlsHtml(t, curSeq, "sc")}
@@ -1342,17 +1343,16 @@ function myScoringHtml() {
     html += `<p class="pay-ok" style="font-weight:800;margin:10px 0">🏁 Round complete — great playing! Tap any hole below to fix a score.</p>`;
   }
 
-  // full grid — course hole numbers in play order, split by loop
+  // full grid — holes 1..18 in play order; entry panel shows the course hole
   html += `<div class="score-grid">`;
   for (let q = 1; q <= holesCount(); q++) {
-    if (q === 10 && holesCount() > 9) html += `<div class="loop-divider">— 2ND TIME AROUND —</div>`;
     const v = (t.scores || {})[q];
     const par = parFor(t, q), ph = physHole(t, q);
     const cls = v == null ? "" : v < par ? "sg-under" : v > par ? "sg-over" : "sg-even";
     const marks = extraUsesAt(t, q).map(u => (extrasList().find(x => x.id === u.id) || {}).emoji || "⭐").join("");
     const cMark = contests().filter(x => x.hole === ph).map(x => x.emoji).join("");
-    html += `<button class="sg-cell ${cls} ${cMark ? "sg-contest" : ""} ${q === curSeq ? "sg-cur" : ""}" data-selscore="${q}" title="your hole ${q}, par ${par}${cMark ? " — contest hole" : ""}">
-      <span class="sg-hole">#${ph}</span>
+    html += `<button class="sg-cell ${cls} ${cMark ? "sg-contest" : ""} ${q === curSeq ? "sg-cur" : ""}" data-selscore="${q}" title="course hole #${ph}, par ${par}${cMark ? " — contest hole" : ""}">
+      <span class="sg-hole">${q}</span>
       <span class="sg-val">${v ?? "·"}</span>${v != null ? `<span class="sg-relx">${relFmt(v - par)}</span>` : ""}${marks ? `<span class="sg-mull">${marks}</span>` : ""}${cMark ? `<span class="sg-cmark">${cMark}</span>` : ""}
     </button>`;
   }
@@ -1492,6 +1492,12 @@ function wireLive() {
     const el = $("scVal"); if (!el) return;
     const v = Math.max(1, Math.min(15, Number(el.dataset.val) + d));
     el.dataset.val = v; el.textContent = v;
+    const par = Number(el.dataset.par || 0);
+    const rel = $("scRel");
+    if (rel && par) {
+      rel.textContent = `(${relFmt(v - par)})`;
+      rel.className = "step-rel " + (v < par ? "rel-under" : v > par ? "rel-over" : "");
+    }
   };
   $("scMinus")?.addEventListener("click", () => step(-1));
   $("scPlus")?.addEventListener("click", () => step(1));
@@ -1628,6 +1634,7 @@ function renderAdmin() {
   html += adminPairingHtml();
   html += adminHolesHtml();
   html += adminScoringHtml();
+  html += adminExtrasPaymentsHtml();
   html += adminPaymentsHtml();
   if (S.isFull) html += adminSettingsHtml() + adminDangerHtml() + adminAuditHtml();
   el.innerHTML = html;
@@ -2002,6 +2009,32 @@ async function exportWorkbook() {
   X.writeFile(wb, fname);
   audit("workbook_exported", fname);
   toast("Workbook downloaded 🎉");
+}
+
+function adminExtrasPaymentsHtml() {
+  const all = Object.values(S.purchases);
+  if (!all.length) return "";
+  const byTeam = {};
+  all.forEach(p => { (byTeam[p.teamId] = byTeam[p.teamId] || []).push(p); });
+  const unpaidTotal = all.filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0);
+  let html = `<div class="card admin-section"><div class="card-title"><span class="flag">💸</span> Extras payments
+    <span class="badge ${unpaidTotal ? "badge-gold" : ""}">${unpaidTotal ? money(unpaidTotal) + " unpaid" : "all paid ✓"}</span></div>
+    <p class="muted small">Cash or Venmo — either way, mark it paid here so the team sees PAID ✓.</p>`;
+  Object.values(byTeam).sort((a, b) => (a[0].teamNumber || 0) - (b[0].teamNumber || 0)).forEach(list => {
+    const t0 = list[0];
+    const due = list.filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0);
+    html += `<div class="xpay-team"><div class="xpay-head">
+      <b>T${t0.teamNumber}</b> ${esc(t0.teamName || "")} — ${list.length} chip${list.length === 1 ? "" : "s"}
+      ${due ? `<span class="chip chip-pen">${money(due)} due</span> <button class="btn btn-tiny btn-gold" data-xpayall="${t0.teamId}">Mark all paid</button>` : `<span class="pay-ok">PAID ✓</span>`}
+    </div>`;
+    list.sort((a, b) => String(a.ts).localeCompare(String(b.ts))).forEach(p => {
+      html += `<div class="shop-item"><span>${p.emoji || ""} ${esc(p.extraName)}${Number(p.amt) > 1 ? " +" + p.amt : ""}${p.free ? ` <span class="chip chip-mull">FREE</span>` : ""} <span class="muted small">${esc(p.byName || "")}</span></span>
+        <span class="shop-right">${p.free ? "—" : money(Number(p.price || 0))}
+        ${p.free ? "" : (p.paid ? `<button class="btn btn-tiny btn-ghost" data-xpay="${p.id}|0">Unpay</button>` : `<button class="btn btn-tiny btn-gold" data-xpay="${p.id}|1">Paid</button>`)}</span></div>`;
+    });
+    html += `</div>`;
+  });
+  return html + `</div>`;
 }
 
 function adminContestWinnersHtml() {
@@ -2469,6 +2502,24 @@ function wireAdmin() {
   });
   $("testWheelBtn")?.addEventListener("click", testWheel);
   $("exportXlsxBtn")?.addEventListener("click", exportWorkbook);
+  document.querySelectorAll("[data-xpay]").forEach(b => b.addEventListener("click", async () => {
+    const [pid, to] = b.dataset.xpay.split("|");
+    try {
+      await updateDoc(doc(db, "extraPurchases", pid), { paid: to === "1" });
+      audit(to === "1" ? "extras_paid" : "extras_unpaid", `purchase ${pid} by ${S.adminEmail}`);
+      toast(to === "1" ? "Marked paid ✓" : "Marked unpaid.");
+    } catch (e) { toast(e.message, true); }
+  }));
+  document.querySelectorAll("[data-xpayall]").forEach(b => b.addEventListener("click", async () => {
+    try {
+      const batch = writeBatch(db);
+      Object.values(S.purchases).filter(p => p.teamId === b.dataset.xpayall && !p.paid && !p.free)
+        .forEach(p => batch.update(doc(db, "extraPurchases", p.id), { paid: true }));
+      await batch.commit();
+      audit("extras_paid_all", `T? team ${b.dataset.xpayall} by ${S.adminEmail}`);
+      toast("Team marked paid ✓");
+    } catch (e) { toast(e.message, true); }
+  }));
   $("resetDrawsBtn")?.addEventListener("click", () => {
     openModal(`<div class="modal-title">Reset all prize drawings?</div>
       <p class="muted small">Deletes every winner and puts all chips back in the hat. Next draw becomes Prize 1.</p>
