@@ -40,6 +40,7 @@ const S = {
   activeTab: "register",
   deepExtras: new URLSearchParams(location.search).has("extras"),
   pairSel: [],         // selected reg ids in pairing tool
+  entrySeq: null,      // manually selected scoring hole (null = next unscored)
   unsub: { payments: null, audit: null }
 };
 
@@ -171,7 +172,7 @@ function nextSeq(t) {
   for (let seq = 1; seq <= holesCount(); seq++) if (sc[seq] == null || sc[seq] === "") return seq;
   return 0; // done
 }
-const SAMPLE_EXTRAS = ["🎟 | Mulligan | 10 | each | 4 | re-hit any shot", "🧵 | Putt string | 1 | ft | 50 | putt inside your string = good, cut off what you use", "🪂 | 150-yd drop | 20 | each | 1 | drop at the 150 marker on a par 5", "👗 | Red tee pass | 10 | each | 2 | hit one drive from the forward tees"];
+const SAMPLE_EXTRAS = ["🎟 | Mulligan | 10 | each | 4 | re-hit any shot", "🧵 | Putt string | 10 | ft | 50 | one long string — cut off whole feet as you use it | 5", "🪂 | 150-yd drop | 20 | each | 1 | drop at the 150 marker on a par 5", "👗 | Red tee pass | 10 | each | 2 | hit one drive from the forward tees"];
 
 function contestHoleOptions(current) {
   let o = `<option value="0">— none —</option>`;
@@ -184,15 +185,17 @@ function contestHoleOptions(current) {
 
 function extrasList() {
   return String(S.config?.extrasLines || "").split("\n").map(l => {
-    const [emoji, name, price, unit, max, note] = l.split("|").map(s => (s || "").trim());
+    const [emoji, name, price, unit, max, note, bundle] = l.split("|").map(s => (s || "").trim());
     if (!name) return null;
+    const u = (unit || "each").toLowerCase();
     return {
       id: name.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
       emoji: emoji || "⭐", name,
-      price: parseFloat(price) || 0,
-      unit: (unit || "each").toLowerCase(),
-      max: parseInt(max) || 0,
-      note: note || ""
+      price: parseFloat(price) || 0,       // price per purchase (per bundle)
+      unit: u,
+      max: parseInt(max) || 0,             // max total units per team (ft for string)
+      note: note || "",
+      bundle: u === "each" ? 1 : (parseInt(bundle) || 5)   // units granted per purchase
     };
   }).filter(Boolean);
 }
@@ -893,6 +896,11 @@ function renderLive() {
     html += `<div class="card" style="border:2px dashed #B08BD0"><b>🧪 TEST MODE</b> — only admins can see live scoring right now. Flip it off in Admin → Live scoring and all test scores reset automatically.</div>`;
   }
   if (c.rulesText) html += `<button class="btn btn-ghost btn-block" id="rulesBtn" style="margin-bottom:10px">📜 Tournament rules</button>`;
+  const myName = (S.me?.name || "").trim().toLowerCase();
+  if (myName && (c.contestLDWinner || "").trim().toLowerCase() === myName)
+    html += `<div class="winner-banner">🏆💪 YOU WON LONGEST DRIVE! 💪🏆</div>`;
+  if (myName && (c.contestCPWinner || "").trim().toLowerCase() === myName)
+    html += `<div class="winner-banner">🏆🎯 YOU WON CLOSEST TO THE PIN! 🎯🏆</div>`;
   html += myScoringHtml();
   html += leaderboardHtml(teams, true);
   html += extrasShopHtml();
@@ -999,8 +1007,11 @@ function contestsHtml() {
   const list = contests();
   if (!list.length) return "";
   return `<div class="card contest-card"><div class="card-title"><span class="flag">🏅</span> Contest holes</div>
-    <div class="roster-count">${list.map(x => `<span class="chip chip-contest">${x.emoji} ${esc(x.name)} — course hole <b>#${x.hole}</b> (par ${pars()[x.hole - 1]})</span>`).join("")}</div>
-    <p class="muted small" style="margin-top:6px">Winners called at the tent after the round — markers are on the hole.</p></div>`;
+    <div class="roster-count">${list.map(x => {
+      const win = x.cls === "ld" ? (S.config.contestLDWinner || "") : (S.config.contestCPWinner || "");
+      return `<span class="chip chip-contest">${x.emoji} ${esc(x.name)} — hole <b>#${x.hole}</b>${win ? ` · <span class="contest-winner">🏆 ${esc(win)}</span>` : ""}</span>`;
+    }).join("")}</div>
+    <p class="muted small" style="margin-top:6px">${(S.config.contestLDWinner || S.config.contestCPWinner) ? "Congrats to the winners!" : "Winners called at the tent after the round — markers are on the hole."}</p></div>`;
 }
 
 
@@ -1118,7 +1129,7 @@ function testWheel() {
 // ---------------------------------------------------------------------
 // EXTRAS SHOP — buy in-app; every purchase is a chip in the prize hat
 // ---------------------------------------------------------------------
-function drawAmt(x) { return x.unit === "each" ? 1 : 10; }  // random draw grants 1 each / 10 ft
+function bundleAmt(x) { return x.unit === "each" ? 1 : (x.bundle || 5); }  // one purchase grants this many units
 
 function extrasShopHtml() {
   const list = extrasList();
@@ -1130,20 +1141,24 @@ function extrasShopHtml() {
   const due = mine.filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0);
   const dealOn = Number(c.dealBuy) > 0 && Number(c.dealFree) > 0;
 
-  let html = `<div class="card" id="extrasShop"><div class="card-title"><span class="flag">🛒</span> Get your extras — ${teamLabel(t)}</div>`;
-  if (dealOn) html += `<div class="deal-band">🔥 DEAL: buy ${c.dealBuy}, get ${c.dealFree} free draw${c.dealFree > 1 ? "s" : ""}!</div>`;
+  const salesClosed = !!c.scoringOpen;   // real live = no more sales (test mode keeps the shop open)
+  let html = `<div class="card" id="extrasShop"><div class="card-title"><span class="flag">🛒</span> ${salesClosed ? "Your extras" : "Get your extras"} — ${teamLabel(t)}</div>`;
+  if (salesClosed) html += `<p class="muted small" style="margin:4px 0 8px">🔒 Extras sales are closed — the round is live. Your chips below are locked in for the prize drawings.</p>`;
+  if (!salesClosed && dealOn) html += `<div class="deal-band">🔥 DEAL: buy ${c.dealBuy}, get ${c.dealFree} free draw${c.dealFree > 1 ? "s" : ""}!</div>`;
 
-  if (mode === "draw") {
+  if (salesClosed) {
+    // no buy buttons once live
+  } else if (mode === "draw") {
     html += `<p class="muted small" style="margin:6px 0 10px">Every draw is random — you might pull ${list.map(x => x.name).join(", ")}. Every chip you buy also goes in the hat for the prize drawings.</p>
       <button class="btn btn-gold btn-block" id="shopDraw">🎲 Draw your extra (${list.map(x => esc(x.name)).join(" · ")}) — ${money(Number(c.drawPrice || 10))}</button>`;
   } else {
     html += `<p class="muted small" style="margin:6px 0 10px">Pick what you want — every purchase is also a chip in the hat for the prize drawings.</p>`;
     list.forEach(x => {
       const have = extraPurchased(t, x.id);
-      const capped = x.max && have >= x.max;
+      const capped = x.max && have + bundleAmt(x) > x.max + 0.001;
       html += `<div class="shop-row">
         <span class="extra-emoji">${x.emoji}</span>
-        <span class="extra-info"><b>${esc(x.name)}</b> — ${x.unit === "each" ? money(x.price) + " each" : money(x.price) + "/" + esc(x.unit) + " (sold in 10 " + esc(x.unit) + ")"}${x.max ? ` · max ${x.max}` : ""}</span>
+        <span class="extra-info"><b>${esc(x.name)}</b> — ${x.unit === "each" ? money(x.price) + " each" : money(x.price) + " per " + bundleAmt(x) + " " + esc(x.unit)}${x.max ? ` · max ${x.max}${x.unit === "each" ? "" : " " + esc(x.unit)} per team` : ""}${x.unit !== "each" && have ? `<br><span class="muted small">your team's ${esc(x.unit)} pool: ${extraLeft(t, x.id)} of ${have} left</span>` : ""}</span>
         <button class="btn btn-tiny ${capped ? "btn-ghost" : "btn-gold"}" data-shopbuy="${x.id}" ${capped ? "disabled" : ""}>${capped ? "Max" : "Add"}</button>
       </div>`;
     });
@@ -1198,18 +1213,18 @@ async function shopBuy(extraId, isDraw, asFree) {
   let x, amt, price;
   if (isDraw || asFree) {
     x = randPick(list);
-    amt = drawAmt(x);
+    amt = bundleAmt(x);
     price = asFree ? 0 : Number(c.drawPrice || 10);
   } else {
     x = list.find(e => e.id === extraId); if (!x) return;
-    amt = drawAmt(x);
-    price = x.unit === "each" ? Number(x.price) : Number(x.price) * amt;
+    amt = bundleAmt(x);
+    price = Number(x.price);   // line price = price per purchase (per bundle)
     if (x.max && extraPurchased(t, x.id) + (x.unit === "each" ? 1 : amt) > x.max * (x.unit === "each" ? 1 : amt))
       { /* soft cap: compare in units purchased */ }
     if (x.max && extraPurchased(t, x.id) >= x.max * (x.unit === "each" ? 1 : 1) && x.unit === "each") return toast(`Max ${x.max} ${x.name} per team.`, true);
   }
   try {
-    await addDoc(collection(db, "extraPurchases"), {
+    const newRef = await addDoc(collection(db, "extraPurchases"), {
       teamId: t.id, teamNumber: t.number, teamName: t.customName || (t.players || []).map(p => p.name).join(" & "),
       uid: S.user?.uid || null, byKey: S.me?.id || null, byName: S.me?.name || "?",
       extraId: x.id, extraName: x.name, emoji: x.emoji, amt, price,
@@ -1219,7 +1234,7 @@ async function shopBuy(extraId, isDraw, asFree) {
       `T${t.number}: ${amt}${x.unit === "each" ? "×" : x.unit} ${x.name}${asFree ? " (FREE)" : " " + money(price)} — ${S.me?.name || "?"}`);
     if (isDraw || asFree) {
       openModal(`<div class="modal-title center">${asFree ? "🎁 FREE DRAW!" : "🎲 You drew…"}</div>
-        <div class="draw-reveal">${x.emoji}<br><b>${esc(x.name)}</b>${amt > 1 ? ` — ${amt} ${esc(x.unit)}` : ""}</div>
+        <div class="draw-reveal">${x.emoji}<br><b>${esc(x.name)}</b>${amt > 1 ? ` — +${amt} ${esc(x.unit)}` : ""}</div>
         <div class="modal-actions"><button class="btn btn-primary btn-block" id="mCancel">Nice!</button></div>`);
       $("mCancel").addEventListener("click", closeModal);
     } else {
@@ -1228,7 +1243,7 @@ async function shopBuy(extraId, isDraw, asFree) {
     // deal: every dealBuy paid chips earns dealFree free draws
     const db_ = Number(c.dealBuy), df = Number(c.dealFree);
     if (!asFree && db_ > 0 && df > 0) {
-      const paidCount = teamPurchases(t.id).filter(p => !p.free).length + 1; // incl this one (snapshot lag)
+      const paidCount = teamPurchases(t.id).filter(p => !p.free && p.id !== newRef.id).length + 1; // this one exactly once
       if (paidCount % db_ === 0) {
         for (let i = 0; i < df; i++) await shopBuy(null, false, true);
         toast(`🔥 Deal hit — ${df} free draw${df > 1 ? "s" : ""} added!`);
@@ -1297,37 +1312,48 @@ function myScoringHtml() {
       ${s.pen ? `<span class="chip chip-pen">+${s.pen} penalty</span>` : ""}
     </div>`;
 
-  if (seq) {
-    const ph = physHole(t, seq), par = parFor(t, seq);
+  const curSeq = (S.entrySeq && S.entrySeq >= 1 && S.entrySeq <= holesCount()) ? S.entrySeq : seq;
+  if (curSeq) {
+    const ph = physHole(t, curSeq), par = parFor(t, curSeq);
+    const existing = (t.scores || {})[curSeq];
     const cs = contests().filter(x => x.hole === ph);
     html += `<div class="entry-box">
       ${cs.map(x => `<div class="contest-flag ${x.cls}">${x.emoji} ${x.name.toUpperCase()} HOLE — ${x.cls === "ld" ? "bombs away" : "stick it close"}</div>`).join("")}
-      <div class="entry-head">Your hole <b>${seq}</b> of ${holesCount()} · course hole <b>#${ph}</b> · par <b>${par}</b></div>
-      ${HOLE_INFO[ph] ? `<button class="hole-peek" data-holezoom="${ph}"><img src="${holeImgSrc(ph)}" alt="hole ${ph}" loading="lazy"><span>⛳ View hole #${ph} — tap to zoom</span></button>` : ""}
-      <div class="stepper">
-        <button class="step-btn" id="scMinus">−</button>
-        <span class="step-val" id="scVal" data-val="${par}">${par}</span>
-        <button class="step-btn" id="scPlus">+</button>
+      <div class="hole-nav">
+        <button class="hn-btn" id="scPrev" ${curSeq <= 1 ? "disabled" : ""}>‹</button>
+        <div class="hn-label">Course hole <b>#${ph}</b> · par ${par}<br><span class="muted small">your ${curSeq}${curSeq === 1 ? "st" : curSeq === 2 ? "nd" : curSeq === 3 ? "rd" : "th"} of ${holesCount()}${existing != null ? " · editing" : ""}</span></div>
+        <button class="hn-btn" id="scNext" ${curSeq >= holesCount() ? "disabled" : ""}>›</button>
       </div>
-      ${extrasList().some(x => extraPurchased(t, x.id) > 0) ? `<div class="use-tally">${extrasList().filter(x => extraPurchased(t, x.id) > 0).map(x => `${x.emoji} <b>${extraLeft(t, x.id)}</b>${x.unit === "each" ? "" : esc(x.unit)} left`).join(" · ")}</div>` : ""}
-      ${extraControlsHtml(t, seq, "sc")}
-      <button class="btn btn-primary btn-block" id="scSave">Save hole ${seq}</button>
+      <div class="entry-cols">
+        ${HOLE_INFO[ph] ? `<button class="entry-img" data-holezoom="${ph}"><img src="${holeImgSrc(ph)}" alt="hole ${ph}" loading="lazy"><span>tap to zoom</span></button>` : "<span></span>"}
+        <div class="entry-right">
+          ${extrasList().some(x => extraPurchased(t, x.id) > 0) ? `<div class="use-tally">${extrasList().filter(x => extraPurchased(t, x.id) > 0).map(x => `${x.emoji} <b>${extraLeft(t, x.id)}</b>${x.unit === "each" ? "" : esc(x.unit)} left`).join(" · ")}</div>` : ""}
+          <div class="stepper">
+            <button class="step-btn" id="scMinus">−</button>
+            <span class="step-val" id="scVal" data-val="${existing ?? par}">${existing ?? par}</span>
+            <button class="step-btn" id="scPlus">+</button>
+          </div>
+          ${extraControlsHtml(t, curSeq, "sc")}
+          <button class="btn btn-primary btn-block" id="scSave">${existing != null ? "Update" : "Save"} hole #${ph}</button>
+        </div>
+      </div>
     </div>`;
   } else {
-    html += `<p class="pay-ok" style="font-weight:800;margin:10px 0">🏁 Round complete — great playing!</p>`;
+    html += `<p class="pay-ok" style="font-weight:800;margin:10px 0">🏁 Round complete — great playing! Tap any hole below to fix a score.</p>`;
   }
 
-  // full grid
+  // full grid — course hole numbers in play order, split by loop
   html += `<div class="score-grid">`;
   for (let q = 1; q <= holesCount(); q++) {
+    if (q === 10 && holesCount() > 9) html += `<div class="loop-divider">— 2ND TIME AROUND —</div>`;
     const v = (t.scores || {})[q];
     const par = parFor(t, q), ph = physHole(t, q);
     const cls = v == null ? "" : v < par ? "sg-under" : v > par ? "sg-over" : "sg-even";
     const marks = extraUsesAt(t, q).map(u => (extrasList().find(x => x.id === u.id) || {}).emoji || "⭐").join("");
     const cMark = contests().filter(x => x.hole === ph).map(x => x.emoji).join("");
-    html += `<button class="sg-cell ${cls} ${cMark ? "sg-contest" : ""}" data-editscore="${q}" title="course hole ${ph}, par ${par}${cMark ? " — contest hole" : ""}">
-      <span class="sg-hole">${q}<span class="sg-phys">#${ph}</span></span>
-      <span class="sg-val">${v ?? "·"}</span>${marks ? `<span class="sg-mull">${marks}</span>` : ""}${cMark ? `<span class="sg-cmark">${cMark}</span>` : ""}
+    html += `<button class="sg-cell ${cls} ${cMark ? "sg-contest" : ""} ${q === curSeq ? "sg-cur" : ""}" data-selscore="${q}" title="your hole ${q}, par ${par}${cMark ? " — contest hole" : ""}">
+      <span class="sg-hole">#${ph}</span>
+      <span class="sg-val">${v ?? "·"}</span>${v != null ? `<span class="sg-relx">${relFmt(v - par)}</span>` : ""}${marks ? `<span class="sg-mull">${marks}</span>` : ""}${cMark ? `<span class="sg-cmark">${cMark}</span>` : ""}
     </button>`;
   }
   html += `</div>`;
@@ -1355,9 +1381,9 @@ function extraControlsHtml(t, seq, prefix) {
           ${Array.from({ length: avail + 1 }, (_, i) => `<option value="${i}" ${i === cur ? "selected" : ""}>${i}</option>`).join("")}
         </select> ${esc(x.name)}${avail > 1 || cur ? "" : ""} <span class="muted small">(${avail} avail)</span></label>`;
     } else {
-      html += `<label class="mull-row">${x.emoji} ${esc(x.name)}:
-        <input class="mull-ft" inputmode="numeric" data-exuse="${x.id}" data-exprefix="${prefix}" value="${cur || ""}" placeholder="0">
-        <span class="muted small">${esc(x.unit)} (${avail} left)</span></label>`;
+      html += `<label class="mull-row">${x.emoji} ${esc(x.name)} — ${esc(x.unit)} used this hole:
+        <input class="mull-ft" inputmode="numeric" pattern="[0-9]*" data-exuse="${x.id}" data-exprefix="${prefix}" value="${cur || ""}" placeholder="0">
+        <span class="muted small">whole ${esc(x.unit)} · ${avail} left</span></label>`;
     }
   });
   return html;
@@ -1367,7 +1393,7 @@ function collectExtraUses(prefix, t, seq) {
   let err = null;
   document.querySelectorAll(`[data-exuse][data-exprefix="${prefix}"]`).forEach(el => {
     const id = el.dataset.exuse;
-    const amt = Math.max(0, Number(el.value) || 0);
+    const amt = Math.max(0, Math.round(Number(el.value) || 0));
     if (!amt) return;
     const x = extrasList().find(e => e.id === id);
     const cur = extraUsesAt(t, seq).filter(u => u.id === id).reduce((a, u) => a + Number(u.amt || 0), 0);
@@ -1470,18 +1496,32 @@ function wireLive() {
   $("scMinus")?.addEventListener("click", () => step(-1));
   $("scPlus")?.addEventListener("click", () => step(1));
 
+  $("scPrev")?.addEventListener("click", () => {
+    const t = myTeam(); if (!t) return;
+    const cur = (S.entrySeq ?? nextSeq(t)) || holesCount();
+    S.entrySeq = Math.max(1, cur - 1); renderLive();
+  });
+  $("scNext")?.addEventListener("click", () => {
+    const t = myTeam(); if (!t) return;
+    const cur = (S.entrySeq ?? nextSeq(t)) || holesCount();
+    S.entrySeq = Math.min(holesCount(), cur + 1); renderLive();
+  });
   $("scSave")?.addEventListener("click", async () => {
     const t = myTeam(); if (!t) return;
-    const seq = nextSeq(t); if (!seq) return;
+    const seq = (S.entrySeq && S.entrySeq >= 1) ? S.entrySeq : nextSeq(t);
+    if (!seq) return;
+    const isEdit = (t.scores || {})[seq] != null;
     const v = Number($("scVal").dataset.val);
     const { uses, err } = collectExtraUses("sc", t, seq);
     if (err) return toast(err, true);
-    await saveHole(t, seq, v, uses, false);
+    await saveHole(t, seq, v, uses, isEdit);
+    S.entrySeq = null;
   });
 
-  document.querySelectorAll("[data-editscore]").forEach(b => b.addEventListener("click", () => {
-    const t = myTeam(); if (!t) return;
-    openEditScore(t, Number(b.dataset.editscore));
+  document.querySelectorAll("[data-selscore]").forEach(b => b.addEventListener("click", () => {
+    S.entrySeq = Number(b.dataset.selscore);
+    renderLive();
+    $("scVal") && document.querySelector(".entry-box")?.scrollIntoView({ behavior: "smooth", block: "center" });
   }));
   wireHoleZoom();
 }
@@ -1505,7 +1545,7 @@ async function saveHole(t, seq, strokes, uses, isEdit) {
     }).join(", ");
     audit(isEdit ? "score_edited" : "score_entered",
       `T${t.number} hole ${seq} (course #${ph}): ${strokes} (par ${par})${useTxt ? " — " + useTxt : ""} — by ${S.me?.name || "?"}`);
-    toast(`Hole ${seq} saved: ${strokes} (${relFmt(strokes - par)}).`);
+    toast(`Hole #${ph} saved: ${strokes} (${relFmt(strokes - par)}).`);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1765,7 +1805,16 @@ function adminScoringHtml() {
         <button class="btn btn-ghost" id="testWheelBtn">🧪 Test wheel</button>
       </div>
       <p class="muted small" style="margin-top:6px">Everyone's phone gets the ${Number(c.spinSeconds || 10)}-second wheel. Drawn chips leave the hat. Test wheel is local — only you see it, nothing is saved.</p>
-    </div>`;
+      ${(() => {
+        const ds = Object.values(S.draws).sort((a, b) => (a.prizeNumber || 0) - (b.prizeNumber || 0));
+        if (!ds.length) return "";
+        return `<div class="shop-list" style="margin-top:8px"><b class="small">Winners so far:</b>
+          ${ds.map(d => `<div class="shop-item"><span><b>P${d.prizeNumber}</b> — ${esc(d.teamName || "Team " + d.teamNumber)} (T${d.teamNumber})</span><span class="small">${d.emoji || ""} ${esc(d.extraName || "")} · ${esc(d.byName || "")}</span></div>`).join("")}
+          <button class="btn btn-tiny btn-ghost btn-block" id="resetDrawsBtn" style="margin-top:8px">↺ Reset drawings (clears winners, chips go back in the hat)</button>
+        </div>`;
+      })()}
+    </div>
+    ${adminContestWinnersHtml()}`;
   if (!teams.length) return html + `<p class="muted" style="margin-top:8px">Teams will appear here once they're set.</p></div>`;
   const anyExtras = extrasList().length > 0;
   html += `<div class="table-scroll" style="margin-top:10px"><table class="admin-table">
@@ -1847,6 +1896,138 @@ function openExtrasModal(teamId) {
       closeModal();
     } catch (e) { toast(e.message, true); }
   });
+}
+
+
+// ---------------------------------------------------------------------
+// EVENT WORKBOOK (.xlsx) — full record of the event
+// ---------------------------------------------------------------------
+async function loadXLSX() {
+  if (window.XLSX) return window.XLSX;
+  await new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  return window.XLSX;
+}
+
+async function exportWorkbook() {
+  toast("Building workbook…");
+  let X;
+  try { X = await loadXLSX(); } catch { return toast("Couldn't load the Excel library — check connection.", true); }
+  const c = S.config || {};
+  const wb = X.utils.book_new();
+  const sheet = (name, rows) => X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(rows), name);
+
+  // ---- Overview ----
+  const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
+  const regs = Object.values(S.regs);
+  sheet("Overview", [
+    [c.eventName || "Fourth and Cold Golf Open"],
+    ["Exported", new Date().toLocaleString()],
+    [],
+    ["Teams", teams.length],
+    ["Registrations", regs.length],
+    ["Players registered", regs.reduce((a, r) => a + (r.players || []).length, 0)],
+    ["Extras chips sold", Object.values(S.purchases).length],
+    ["Prize drawings held", Object.values(S.draws).length],
+    [],
+    ["💪 Longest drive winner", c.contestLDWinner || "—", c.contestLD ? "hole #" + c.contestLD : ""],
+    ["🎯 Closest to the pin winner", c.contestCPWinner || "—", c.contestCP ? "hole #" + c.contestCP : ""]
+  ]);
+
+  // ---- Final standings + hole-by-hole ----
+  const holeCols = Array.from({ length: holesCount() }, (_, i) => "H" + (i + 1));
+  const standings = teams.map(t => ({ t, s: teamScore(t) }))
+    .sort((a, b) => (a.s.rel - b.s.rel) || (b.s.played - a.s.played) || (a.t.number - b.t.number));
+  sheet("Final Standings", [
+    ["Rank", "Team #", "Team name", "Players", "Start hole", "Thru", "Gross", "Penalty", "Score vs par", ...holeCols.map((h, i) => `${h} (#${((startHole(standings[0]?.t || {hole:1}) - 1 + i) % pars().length) + 1})`)],
+    ...standings.map((x, i) => [
+      x.s.played ? i + 1 : "", x.t.number, x.t.customName || "", (x.t.players || []).map(p => p.name).join(" & "),
+      x.t.hole || "", x.s.played, x.s.strokes, x.s.pen, x.s.played ? relFmt(x.s.rel) : "",
+      ...Array.from({ length: holesCount() }, (_, q) => (x.t.scores || {})[q + 1] ?? "")
+    ])
+  ]);
+
+  // ---- Registrations ----
+  sheet("Registrations", [
+    ["Type", "Players", "Handicaps", "Owner email", "Price", "Team #", "Pairing preference", "Registered"],
+    ...regs.map(r => [
+      r.type, (r.players || []).map(p => p.name).join(" & "),
+      (r.players || []).map(p => p.handicap ?? "").join(" & "),
+      r.ownerEmail || "", Number(r.price || 0),
+      r.teamId && S.teams[r.teamId] ? S.teams[r.teamId].number : "",
+      r.type === "individual" ? (r.preference === "partner" ? "Partner: " + (r.partnerName || "") : "Random") : "",
+      (r.createdAt || "").slice(0, 16).replace("T", " ")
+    ])
+  ]);
+
+  // ---- Payments (registration money) ----
+  sheet("Payments", [
+    ["When", "Account", "Amount", "Collector", "Note"],
+    ...Object.values(S.payments).sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || ""))).map(p => [
+      (p.ts || "").slice(0, 16).replace("T", " "), p.accountName || p.accountKey || "", Number(p.amount || 0), p.by || "", p.note || ""
+    ])
+  ]);
+
+  // ---- Extras purchases ----
+  sheet("Extras", [
+    ["When", "Team #", "Team", "Bought by", "Extra", "Amt", "Price", "Free", "Paid", "Won prize #"],
+    ...Object.values(S.purchases).sort((a, b) => String(a.ts).localeCompare(String(b.ts))).map(p => [
+      (p.ts || "").slice(0, 16).replace("T", " "), p.teamNumber, p.teamName || "", p.byName || "",
+      p.extraName, Number(p.amt || 0), Number(p.price || 0), p.free ? "FREE" : "", p.paid ? "PAID" : (p.free ? "" : "unpaid"), p.drawnPrize ?? ""
+    ]),
+    [],
+    ["Per-team totals:"],
+    ["Team #", "Team", ...extrasList().map(x => x.name + " bought"), ...extrasList().map(x => x.name + " used"), "Unpaid $"],
+    ...teams.map(t => [
+      t.number, t.customName || (t.players || []).map(p => p.name).join(" & "),
+      ...extrasList().map(x => extraPurchased(t, x.id)),
+      ...extrasList().map(x => extraUsed(t, x.id)),
+      teamPurchases(t.id).filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0)
+    ])
+  ]);
+
+  // ---- Prize winners ----
+  sheet("Prize Winners", [
+    ["Prize #", "Team #", "Team", "Winning chip", "Chip bought by", "Drawn at"],
+    ...Object.values(S.draws).sort((a, b) => (a.prizeNumber || 0) - (b.prizeNumber || 0)).map(d => [
+      d.prizeNumber, d.teamNumber, d.teamName || "", d.extraName || "", d.byName || "", (d.ts || "").slice(0, 16).replace("T", " ")
+    ])
+  ]);
+
+  const fname = (c.eventName || "fourth-and-cold-golf").toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-event-record.xlsx";
+  X.writeFile(wb, fname);
+  audit("workbook_exported", fname);
+  toast("Workbook downloaded 🎉");
+}
+
+function adminContestWinnersHtml() {
+  const c = S.config || {};
+  const names = [...new Set(Object.values(S.regs).flatMap(r => (r.players || []).map(p => p.name)).filter(Boolean))].sort();
+  const opt = (sel) => `<option value="">— pick winner —</option>` + names.map(n => `<option ${n === sel ? "selected" : ""}>${esc(n)}</option>`).join("");
+  return `<div class="drawings-box" style="margin-top:10px"><b>🏅 Contest winners</b>
+    <div class="admin-grid" style="margin-top:8px">
+      <div><label class="field-label">💪 Longest drive${c.contestLD ? ` (hole #${c.contestLD})` : ""}</label><select class="field" id="winLD">${opt(c.contestLDWinner || "")}</select></div>
+      <div><label class="field-label">🎯 Closest to the pin${c.contestCP ? ` (hole #${c.contestCP})` : ""}</label><select class="field" id="winCP">${opt(c.contestCPWinner || "")}</select></div>
+    </div>
+    <button class="btn btn-gold btn-block" id="saveContestWinners" style="margin-top:8px">Save contest winners</button>
+    <p class="muted small" style="margin-top:6px">Shows on everyone's Live tab — and the winner gets a gold WINNER banner on their own phone.</p>
+  </div>`;
+}
+
+async function resetDrawings() {
+  try {
+    const batch = writeBatch(db);
+    Object.values(S.draws).forEach(d => batch.delete(doc(db, "draws", d.id)));
+    Object.values(S.purchases).filter(p => p.drawnPrize != null).forEach(p => batch.update(doc(db, "extraPurchases", p.id), { drawnPrize: null }));
+    await batch.commit();
+    S.shownDraws = {};
+    audit("drawings_reset", "all prize draws cleared by " + S.adminEmail);
+    toast("Drawings reset — every chip is back in the hat, next draw is Prize 1.");
+  } catch (e) { toast(e.message, true); }
 }
 
 function openPenalty(teamId) {
@@ -2102,6 +2283,7 @@ async function saveSettings() {
 // ---------- danger zone (full admin) ----------
 function adminDangerHtml() {
   return `<div class="card admin-section"><div class="card-title"><span class="flag">🗄️</span> Backup &amp; reset <span class="badge badge-gold">Full admin</span></div>
+    <button class="btn btn-gold btn-block" id="exportXlsxBtn" style="margin-bottom:10px">📊 Download event workbook (.xlsx) — full record</button>
     <div class="add-row">
       <button class="btn btn-ghost" id="dlBackup">⬇ Download backup (JSON + CSV)</button>
       <button class="btn btn-ghost" id="cloudArchive">☁ Save cloud archive</button>
@@ -2286,6 +2468,26 @@ function wireAdmin() {
     $("mGo").addEventListener("click", () => { closeModal(); adminDrawPrize(); });
   });
   $("testWheelBtn")?.addEventListener("click", testWheel);
+  $("exportXlsxBtn")?.addEventListener("click", exportWorkbook);
+  $("resetDrawsBtn")?.addEventListener("click", () => {
+    openModal(`<div class="modal-title">Reset all prize drawings?</div>
+      <p class="muted small">Deletes every winner and puts all chips back in the hat. Next draw becomes Prize 1.</p>
+      <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-danger" id="mGo">Reset drawings</button></div>`);
+    $("mCancel").addEventListener("click", closeModal);
+    $("mGo").addEventListener("click", () => { closeModal(); resetDrawings(); });
+  });
+  $("saveContestWinners")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "config", "current"), {
+        contestLDWinner: $("winLD").value || "",
+        contestCPWinner: $("winCP").value || "",
+        updatedAt: nowIso()
+      });
+      audit("contest_winners_set", `LD: ${$("winLD").value || "—"} · CP: ${$("winCP").value || "—"}`);
+      toast("Contest winners saved — they're live for everyone.");
+    } catch (e) { toast(e.message, true); }
+  });
   $("setScoringTest")?.addEventListener("change", async (e) => {
     try {
       if (!e.target.checked) {
@@ -2294,10 +2496,13 @@ function wireAdmin() {
         Object.values(S.teams).forEach(t => batch.update(doc(db, "teams", t.id), {
           scores: {}, scoreTimes: {}, extraUses: [], lastScoreAt: null, lastScoreBy: null
         }));
+        Object.values(S.draws).forEach(d => batch.delete(doc(db, "draws", d.id)));
+        Object.values(S.purchases).filter(p => p.drawnPrize != null).forEach(p => batch.update(doc(db, "extraPurchases", p.id), { drawnPrize: null }));
         await batch.commit();
+        S.shownDraws = {};
         await updateDoc(doc(db, "config", "current"), { scoringTest: false, updatedAt: nowIso() });
         audit("scoring_test_off", "test data reset");
-        toast("Test mode off — all test scores wiped clean.");
+        toast("Test mode off — test scores and prize drawings wiped clean (next draw = Prize 1).");
         const testBuys = Object.values(S.purchases).length;
         if (testBuys) toast(`Heads up: ${testBuys} extras purchase(s) exist — undo any test ones in the shop or Extras modal.`, true);
       } else {

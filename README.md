@@ -84,3 +84,13 @@ Upload the `holes/` folder (hole-1.jpg … hole-9.jpg) to the repo root. Players
 - **Test modes**: 🧪 Scoring test = Live tab admins-only; toggling OFF auto-wipes all scores/usage. 🧪 Test wheel = local-only spin with fake chips, nothing saved.
 - **QR**: qr-extras-card.png/pdf (4×6 print) → app opens straight to the shop (?extras=1).
 - **Deploy**: replace app.js, styles.css, README.md and re-publish firestore.rules (adds extraPurchases + draws collections). Nothing existing is touched — all new settings default safely and the settings form pre-fills from your live config.
+
+## v4 — day-of polish
+- Dark-theme fixes everywhere (draw reveal, rules, shop, winners, score entry) + color-scheme meta so phones can't invert it.
+- Score entry: hole image left / controls right, prev-next hole arrows, tap any grid cell to jump to it. Grid shows course hole numbers in play order with a 2nd-loop divider, and each cell shows score + (E/−1/+1).
+- Putt string is one cumulative pool of feet: each purchase adds a bundle (extras line gains an optional 7th field = bundle size, default 5). Line price = price per bundle. Example: 🧵 | Putt string | 10 | ft | 50 | one long string — cut off whole feet as you use it | 5 → $10 buys 5 ft, buy 3 = 15-ft pool, max 50 ft/team. Usage is whole feet per hole (7-ft putt → enter 7 → 8 left), tally shows feet remaining everywhere. Update your live extras line in Settings to this format (delete test string purchases first).
+- Deal bug fixed (free draw fired one purchase early).
+- Extras sales lock automatically when Scoring open flips on (test mode keeps the shop open for testing).
+- Admin: winners list under Prize drawings, ↺ Reset drawings, and 🏅 Contest winners dropdowns (registered players) — winners show on the Live contests card and the winner's own phone gets a gold WINNER banner.
+- Turning scoring test OFF now also clears prize drawings and puts chips back in the hat (prize counter returns to 1).
+- 📊 Download event workbook (.xlsx) in Backup & reset: Overview, Final Standings with hole-by-hole, Registrations, Payments, Extras (chips + per-team totals + unpaid), Prize Winners.
