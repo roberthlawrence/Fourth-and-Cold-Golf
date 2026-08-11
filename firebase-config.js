@@ -8,10 +8,10 @@
 // Suggested project name: fourth-and-cold-golf
 // ---------------------------------------------------------------
 export const firebaseConfig = {
-  apiKey: "PASTE_API_KEY",
+  apiKey: "AIzaSyD1n2SQap3pcjXa2Fo-2foBBH-2PWPAUFE",
   authDomain: "fourth-and-cold-golf.firebaseapp.com",
   projectId: "fourth-and-cold-golf",
   storageBucket: "fourth-and-cold-golf.firebasestorage.app",
-  messagingSenderId: "PASTE_SENDER_ID",
-  appId: "PASTE_APP_ID"
+  messagingSenderId: "1062901295791",
+  appId: "1:1062901295791:web:cc3ab37741acbe5f6f825a"
 };
