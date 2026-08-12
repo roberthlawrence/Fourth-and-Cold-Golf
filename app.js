@@ -113,6 +113,11 @@ function defaultConfig(bootEmail) {
     dealFree: 0,            // ... get M free draws (0/0 = no deal)
     spinSeconds: 10,        // wheel spin time (matches the chips game)
     scoringTest: false,     // admins-only live scoring test
+    handicapOn: false,      // show net (handicap-adjusted) scoring
+    hcpPctLow: 35,          // % of lower player's handicap
+    hcpPctHigh: 15,         // % of higher player's handicap
+    roundClosed: false,     // entry locked, admins verifying
+    roundFinal: false,      // winners posted
     updatedAt: nowIso()
   };
 }
@@ -154,6 +159,32 @@ function isAdminViewer() { return !!(S.isFull || S.isFin); }
 function scoringLive() {
   const c = S.config || {};
   return !!(c.scoringOpen || (c.scoringTest && isAdminViewer()));
+}
+
+function teamHcp(t) {
+  const c = S.config || {};
+  const hs = (t.players || []).map(p => {
+    const h = parseFloat(p.handicap);
+    return isNaN(h) ? DEFAULT_HANDICAP : h;
+  }).sort((a, b) => a - b);
+  if (!hs.length) return 0;
+  const lo = hs[0], hi = hs[hs.length - 1];
+  const adj = lo * (Number(c.hcpPctLow ?? 35) / 100) + (hs.length > 1 ? hi * (Number(c.hcpPctHigh ?? 15) / 100) : 0);
+  return Math.round(adj);
+}
+
+function standings(useNet) {
+  return Object.values(S.teams).map(t => {
+    const s = teamScore(t);
+    return { t, s, hcp: teamHcp(t), net: s.rel - teamHcp(t) };
+  }).sort((a, b) => {
+    const av = useNet ? a.net : a.s.rel, bv = useNet ? b.net : b.s.rel;
+    return (av - bv) || (b.s.played - a.s.played) || (a.t.number - b.t.number);
+  });
+}
+function champion(useNet) {
+  const done = standings(useNet).filter(x => x.s.played > 0);
+  return done.length ? done[0] : null;
 }
 
 function teamScore(t) {
@@ -483,6 +514,18 @@ function renderAll() {
 function renderBanner() {
   const b = $("statusBanner");
   const max = Number(S.config.maxPlayers || 0);
+  if (S.config.roundFinal) {
+    b.className = "status-banner final";
+    b.innerHTML = `🏁 FINAL — winners are posted!`;
+    b.classList.remove("hidden");
+    return;
+  }
+  if (S.config.roundClosed) {
+    b.className = "status-banner closed-round";
+    b.innerHTML = `⏸ Round closed — verifying scores`;
+    b.classList.remove("hidden");
+    return;
+  }
   if (S.config.scoringOpen) {
     b.className = "status-banner live";
     b.innerHTML = `<span class="live-dot"></span> LIVE — scoring is open`;
@@ -896,6 +939,18 @@ function renderLive() {
     html += `<div class="card" style="border:2px dashed #B08BD0"><b>🧪 TEST MODE</b> — only admins can see live scoring right now. Flip it off in Admin → Live scoring and all test scores reset automatically.</div>`;
   }
   if (c.rulesText) html += `<button class="btn btn-ghost btn-block" id="rulesBtn" style="margin-bottom:10px">📜 Tournament rules</button>`;
+  if (c.roundFinal) {
+    const g = champion(false), nt = c.handicapOn ? champion(true) : null;
+    const mine = myTeam();
+    if (g && mine && g.t.id === mine.id) html += `<div class="winner-banner">🏆🏆 CONGRATULATIONS — GROSS CHAMPIONS! 🏆🏆<br><span class="small">${relFmt(g.s.rel)} · ${teamLabel(g.t)}</span></div>`;
+    if (nt && mine && nt.t.id === mine.id && (!g || g.t.id !== mine.id)) html += `<div class="winner-banner">🏆🏆 CONGRATULATIONS — NET CHAMPIONS! 🏆🏆<br><span class="small">${relFmt(nt.net)} net · ${teamLabel(nt.t)}</span></div>`;
+    html += `<div class="card final-card"><div class="card-title"><span class="flag">🏁</span> FINAL RESULTS</div>
+      ${g ? `<div class="final-row">🥇 <b>GROSS champion:</b> ${teamLabel(g.t)} — ${relFmt(g.s.rel)}</div>` : ""}
+      ${nt ? `<div class="final-row">🥇 <b>NET champion:</b> ${teamLabel(nt.t)} — ${relFmt(nt.net)} <span class="muted small">(gross ${relFmt(nt.s.rel)}, −${nt.hcp})</span></div>` : ""}
+      ${c.contestLDWinner ? `<div class="final-row">💪 <b>Longest drive:</b> ${esc(c.contestLDWinner)}</div>` : ""}
+      ${c.contestCPWinner ? `<div class="final-row">🎯 <b>Closest to the pin:</b> ${esc(c.contestCPWinner)}</div>` : ""}
+    </div>`;
+  }
   const myName = (S.me?.name || "").trim().toLowerCase();
   if (myName && (c.contestLDWinner || "").trim().toLowerCase() === myName)
     html += `<div class="winner-banner">🏆💪 YOU WON LONGEST DRIVE! 💪🏆</div>`;
@@ -939,19 +994,28 @@ function openRules(mustAck) {
 }
 
 function leaderboardHtml(teams, open) {
-  const scored = teams.map(t => ({ t, s: teamScore(t) }))
-    .sort((a, b) => (a.s.rel - b.s.rel) || (b.s.played - a.s.played) || (a.t.number - b.t.number));
+  const hOn = !!S.config.handicapOn;
+  let html = `<div class="card"><div class="card-title"><span class="flag">🏆</span> Leaderboard${hOn ? " — GROSS" : ""}</div>`;
+  if (!teams.length) return html + `<p class="muted">No teams yet.</p></div>`;
+  html += lbListHtml(false, open);
+  if (hOn) {
+    html += `<div class="card-title" style="margin-top:14px"><span class="flag">♿</span> Leaderboard — NET <span class="muted small">(after handicap)</span></div>`;
+    html += lbListHtml(true, open);
+  }
+  return html + (open ? `<p class="muted small" style="margin-top:8px">Every score is timestamped and logged with who entered it. Teams more than ${Number(S.config.paceThreshold || 3)} holes behind the field get flagged — keep it honest, enter as you go. Committee reserves the right to assess penalties or remove teams for score dumping.</p>` : "") + `</div>`;
+}
+
+function lbListHtml(useNet, open) {
+  const scored = standings(useNet);
   const med = fieldMedianThru();
   const thr = Number(S.config.paceThreshold || 3);
-
-  let html = `<div class="card"><div class="card-title"><span class="flag">🏆</span> Leaderboard</div>`;
-  if (!teams.length) return html + `<p class="muted">No teams yet.</p></div>`;
-  html += `<div class="lb">`;
+  let html = `<div class="lb">`;
   let lastRel = null, lastRank = 0;
   scored.forEach((x, i) => {
     const { t, s } = x;
-    const rank = (open && s.played) ? ((s.rel === lastRel) ? lastRank : i + 1) : "";
-    if (open && s.played) { lastRel = s.rel; lastRank = rank; }
+    const val = useNet ? x.net : s.rel;
+    const rank = (open && s.played) ? ((val === lastRel) ? lastRank : i + 1) : "";
+    if (open && s.played) { lastRel = val; lastRank = rank; }
     const behind = open && med - s.played >= thr && s.played < holesCount();
     const done = s.played >= holesCount();
     const exChips = extrasList().map(x => {
@@ -966,16 +1030,14 @@ function leaderboardHtml(teams, open) {
         ${t.lastScoreAt ? `<span class="lb-upd">upd ${agoFmt(t.lastScoreAt)}</span>` : ""}
       </span>
       <span class="lb-chips">
-        ${s.pen ? `<span class="chip chip-pen" title="${esc((t.penalties||[]).map(p=>p.strokes+" — "+p.note).join("; "))}">+${s.pen} pen</span>` : ""}
+        ${useNet ? "" : `${s.pen ? `<span class="chip chip-pen" title="${esc((t.penalties||[]).map(p=>p.strokes+" — "+p.note).join("; "))}">+${s.pen} pen</span>` : ""}
         ${exChips}
-        ${behind ? `<span class="chip chip-behind">⏳ ${med - s.played} behind</span>` : ""}
+        ${behind ? `<span class="chip chip-behind">⏳ ${med - s.played} behind</span>` : ""}`}
       </span>
-      <span class="lb-score ${s.rel < 0 ? "under" : s.rel > 0 ? "over" : ""}">${s.played ? relFmt(s.rel) : "—"}</span>
+      <span class="lb-score ${val < 0 ? "under" : val > 0 ? "over" : ""}">${s.played ? relFmt(val) : "—"}${useNet ? `<span class="lb-hcp">−${x.hcp}</span>` : ""}</span>
       <span class="lb-thru">${done ? "F" : s.played ? `thru ${s.played}` : "not started"} <span class="lb-start">(S${startHole(t)}${esc(String(t.hole||"").replace(/^\d+/,""))})</span></span>
     </div>`;
   });
-  html += `</div>`;
-  if (open) html += `<p class="muted small" style="margin-top:8px">Every score is timestamped and logged with who entered it. Teams more than ${Number(S.config.paceThreshold||3)} holes behind the field get flagged — keep it honest, enter as you go. Committee reserves the right to assess penalties or remove teams for score dumping.</p>`;
   return html + `</div>`;
 }
 
@@ -1312,8 +1374,11 @@ function myScoringHtml() {
       ${s.pen ? `<span class="chip chip-pen">+${s.pen} penalty</span>` : ""}
     </div>`;
 
-  const curSeq = (S.entrySeq && S.entrySeq >= 1 && S.entrySeq <= holesCount()) ? S.entrySeq : seq;
-  if (curSeq) {
+  const locked = !!(S.config.roundClosed || S.config.roundFinal);
+  const curSeq = locked ? 0 : ((S.entrySeq && S.entrySeq >= 1 && S.entrySeq <= holesCount()) ? S.entrySeq : seq);
+  if (locked) {
+    html += `<p class="pay-ok" style="font-weight:800;margin:10px 0">🔒 ${S.config.roundFinal ? "Round is FINAL — congrats to the winners!" : "Round closed — the committee is verifying scores."}</p>`;
+  } else if (curSeq) {
     const ph = physHole(t, curSeq), par = parFor(t, curSeq);
     const existing = (t.scores || {})[curSeq];
     const cs = contests().filter(x => x.hole === ph);
@@ -1523,6 +1588,7 @@ function wireLive() {
   });
 
   document.querySelectorAll("[data-selscore]").forEach(b => b.addEventListener("click", () => {
+    if (S.config.roundClosed || S.config.roundFinal) return;
     S.entrySeq = Number(b.dataset.selscore);
     renderLive();
     $("scVal") && document.querySelector(".entry-box")?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1531,6 +1597,7 @@ function wireLive() {
 }
 
 async function saveHole(t, seq, strokes, uses, isEdit) {
+  if ((S.config.roundClosed || S.config.roundFinal) && !isAdminViewer()) return toast("Round is closed — scores are locked.", true);
   try {
     // replace this hole's extra uses with the new set
     const otherUses = (t.extraUses || []).filter(u => Number(u.seq) !== Number(seq));
@@ -1773,17 +1840,19 @@ function adminHolesHtml() {
   const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
   let html = `<div class="card admin-section"><div class="card-title"><span class="flag">🕳️</span> Hole assignments</div>`;
   if (!teams.length) { html += `<p class="muted">Assign holes once teams are set — usually the day before.</p></div>`; return html; }
-  html += `<div class="table-scroll"><table class="admin-table"><tr><th>Team</th><th>Players</th><th>Hole</th><th></th></tr>`;
+  const hOn = !!S.config.handicapOn;
+  html += `<div class="table-scroll"><table class="admin-table"><tr><th>Team</th><th>Players &amp; HCP</th><th>Hole</th>${hOn ? "<th>Adj</th>" : ""}<th></th></tr>`;
   teams.forEach(t => {
     const splittable = t.source !== "registration";
     html += `<tr>
       <td><b>${t.number}</b></td>
-      <td class="small">${(t.players || []).map(p => esc(p.name)).join("<br>")}</td>
+      <td class="small">${(t.players || []).map((p, i) => `<span class="hcp-line">${esc(p.name)} <input class="field field-mini hcp-in" inputmode="decimal" data-hcpedit="${t.id}|${i}" value="${p.handicap ?? ""}" placeholder="${DEFAULT_HANDICAP}"></span>`).join("")}</td>
       <td><select class="hole-select" data-hole="${t.id}">${holeOptions(t.hole || "")}</select></td>
+      ${hOn ? `<td><b>−${teamHcp(t)}</b></td>` : ""}
       <td>${splittable ? `<button class="btn btn-tiny btn-ghost" data-split="${t.id}" title="Undo this pairing">Split</button>` : ""}</td>
     </tr>`;
   });
-  html += `</table></div><p class="muted small" style="margin-top:8px">Saves instantly and shows on the public roster.</p></div>`;
+  html += `</table></div><p class="muted small" style="margin-top:8px">Saves instantly. Blank handicap = ${DEFAULT_HANDICAP}.${hOn ? ` Adj = ${Number(S.config.hcpPctLow ?? 35)}% of the lower handicap + ${Number(S.config.hcpPctHigh ?? 15)}% of the higher, rounded — subtracted from gross for NET.` : ""}</p></div>`;
   return html;
 }
 
@@ -1799,6 +1868,14 @@ function adminScoringHtml() {
       <div><b>Scoring open</b><br><span class="muted small">Flip on at the shotgun start. Shows the LIVE banner to everyone.</span></div>
       <label class="switch"><input type="checkbox" id="setScoring" ${c.scoringOpen ? "checked" : ""}><span class="slider"></span></label>
     </div>
+    <div class="toggle-row">
+      <div><b>♿ Show handicap (NET) scoring</b><br><span class="muted small">Leaderboard splits into GROSS and NET. Set player handicaps in Hole assignments.</span></div>
+      <label class="switch"><input type="checkbox" id="setHcpOn" ${c.handicapOn ? "checked" : ""}><span class="slider"></span></label>
+    </div>
+    ${c.handicapOn ? `<div class="add-row" style="margin:4px 0 8px">
+      <div style="flex:1"><label class="field-label">% of LOW handicap</label><input class="field" id="setHcpLow" inputmode="numeric" value="${c.hcpPctLow ?? 35}"></div>
+      <div style="flex:1"><label class="field-label">% of HIGH handicap</label><input class="field" id="setHcpHigh" inputmode="numeric" value="${c.hcpPctHigh ?? 15}"></div>
+    </div>` : ""}
     <div class="toggle-row">
       <div><b>🧪 Scoring test mode</b><br><span class="muted small">Live tab works for admins only. Turning OFF wipes all scores &amp; extra-usage automatically.</span></div>
       <label class="switch"><input type="checkbox" id="setScoringTest" ${c.scoringTest ? "checked" : ""}><span class="slider"></span></label>
@@ -1834,7 +1911,7 @@ function adminScoringHtml() {
       <td>${s.played ? relFmt(s.rel) : "—"}${s.pen ? ` <span class="chip-pen small">(+${s.pen})</span>` : ""}</td>
       ${anyExtras ? `<td class="small">${extrasList().map(x => extraPurchased(t, x.id) ? `${x.emoji}${extraUsed(t, x.id)}/${extraPurchased(t, x.id)}` : "").filter(Boolean).join(" ") || "—"}<br><button class="btn btn-tiny btn-ghost" data-extras="${t.id}">Set</button></td>` : ""}
       <td class="small">${behind ? `<span class="chip chip-behind">⏳ ${med - s.played} behind</span>` : ""} ${bulk ? `<span class="chip chip-pen" title="4+ holes entered within 3 minutes">📦 bulk entry</span>` : ""}</td>
-      <td><button class="btn btn-tiny btn-ghost" data-penalty="${t.id}">Penalty</button></td>
+      <td><button class="btn btn-tiny btn-ghost" data-penalty="${t.id}">Penalty</button><br><button class="btn btn-tiny btn-ghost" data-editteam="${t.id}" style="margin-top:4px">Scores</button></td>
     </tr>`;
     (t.penalties || []).forEach((p, i) => {
       html += `<tr class="pen-row"><td colspan="${anyExtras ? 5 : 4}" class="small">⚠ +${Number(p.strokes)} — ${esc(p.note || "")} <span class="muted">(${esc(p.by || "")}, ${esc((p.ts || "").slice(5, 16).replace("T", " "))})</span></td>
@@ -1939,6 +2016,13 @@ async function exportWorkbook() {
     ["Extras chips sold", Object.values(S.purchases).length],
     ["Prize drawings held", Object.values(S.draws).length],
     [],
+    ...(c.roundFinal ? (() => {
+      const g = champion(false), nt = c.handicapOn ? champion(true) : null;
+      return [
+        ["🥇 GROSS champion", g ? `T${g.t.number} ${g.t.customName || ""}` : "—", g ? relFmt(g.s.rel) : ""],
+        ...(nt ? [["🥇 NET champion", `T${nt.t.number} ${nt.t.customName || ""}`, relFmt(nt.net) + " net"]] : [])
+      ];
+    })() : []),
     ["💪 Longest drive winner", c.contestLDWinner || "—", c.contestLD ? "hole #" + c.contestLD : ""],
     ["🎯 Closest to the pin winner", c.contestCPWinner || "—", c.contestCP ? "hole #" + c.contestCP : ""]
   ]);
@@ -1948,10 +2032,11 @@ async function exportWorkbook() {
   const standings = teams.map(t => ({ t, s: teamScore(t) }))
     .sort((a, b) => (a.s.rel - b.s.rel) || (b.s.played - a.s.played) || (a.t.number - b.t.number));
   sheet("Final Standings", [
-    ["Rank", "Team #", "Team name", "Players", "Start hole", "Thru", "Gross", "Penalty", "Score vs par", ...holeCols.map((h, i) => `${h} (#${((startHole(standings[0]?.t || {hole:1}) - 1 + i) % pars().length) + 1})`)],
+    ["Rank (gross)", "Team #", "Team name", "Players", "Start hole", "Thru", "Gross", "Penalty", "Score vs par", "HCP adj", "NET", ...holeCols.map((h, i) => `${h} (#${((startHole(standings[0]?.t || {hole:1}) - 1 + i) % pars().length) + 1})`)],
     ...standings.map((x, i) => [
       x.s.played ? i + 1 : "", x.t.number, x.t.customName || "", (x.t.players || []).map(p => p.name).join(" & "),
       x.t.hole || "", x.s.played, x.s.strokes, x.s.pen, x.s.played ? relFmt(x.s.rel) : "",
+      teamHcp(x.t), x.s.played ? relFmt(x.s.rel - teamHcp(x.t)) : "",
       ...Array.from({ length: holesCount() }, (_, q) => (x.t.scores || {})[q + 1] ?? "")
     ])
   ]);
@@ -2046,6 +2131,16 @@ function adminContestWinnersHtml() {
     </div>
     <button class="btn btn-gold btn-block" id="saveContestWinners" style="margin-top:8px">Save contest winners</button>
     <p class="muted small" style="margin-top:6px">Shows on everyone's Live tab — and the winner gets a gold WINNER banner on their own phone.</p>
+    <hr style="border-color:var(--line);margin:12px 0">
+    <b>🏁 Close &amp; finalize</b>
+    <p class="muted small" style="margin:4px 0 8px">1) Close the round to lock player entry while you verify (fix scores with each team's <b>Scores</b> button in Live scoring). 2) Finalize to post winners on every phone.</p>
+    ${!c.roundClosed && !c.roundFinal ? `<button class="btn btn-primary btn-block" id="closeRoundBtn">⏸ Close round — lock score entry</button>` : ""}
+    ${c.roundClosed && !c.roundFinal ? `<div class="add-row">
+      <button class="btn btn-ghost" id="reopenRoundBtn" style="flex:1">↩ Reopen (back live)</button>
+      <button class="btn btn-gold" id="finalizeBtn" style="flex:1">🏁 FINALIZE &amp; POST WINNERS</button>
+    </div>` : ""}
+    ${c.roundFinal ? `<p class="pay-ok" style="font-weight:800">🏁 FINAL — winners are posted.</p>
+      <button class="btn btn-ghost btn-block" id="unfinalizeBtn">↩ Un-finalize (back to closed)</button>` : ""}
   </div>`;
 }
 
@@ -2059,6 +2154,38 @@ async function resetDrawings() {
     audit("drawings_reset", "all prize draws cleared by " + S.adminEmail);
     toast("Drawings reset — every chip is back in the hat, next draw is Prize 1.");
   } catch (e) { toast(e.message, true); }
+}
+
+function openTeamScores(teamId) {
+  const t = S.teams[teamId]; if (!t) return;
+  openModal(`
+    <div class="modal-title">Scores — T${t.number}${t.customName ? " " + esc(t.customName) : ""}</div>
+    <p class="muted small">Course hole per row (start ${esc(t.hole || "?")}). Blank = not played.</p>
+    <div class="ts-grid">
+      ${Array.from({ length: holesCount() }, (_, i) => {
+        const q = i + 1, ph = physHole(t, q), par = parFor(t, q);
+        const v = (t.scores || {})[q];
+        return `<label class="ts-cell"><span>${q} <i>#${ph} p${par}</i></span><input class="field field-mini" inputmode="numeric" data-tscore="${q}" value="${v ?? ""}"></label>`;
+      }).join("")}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-gold" id="tsSave">Save all</button>
+    </div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  $("tsSave").addEventListener("click", async () => {
+    const scores = {}, times = { ...(t.scoreTimes || {}) };
+    document.querySelectorAll("[data-tscore]").forEach(inp => {
+      const v = parseInt(inp.value);
+      if (!isNaN(v) && v >= 1) { scores[inp.dataset.tscore] = v; if (!times[inp.dataset.tscore]) times[inp.dataset.tscore] = nowIso(); }
+    });
+    try {
+      await updateDoc(doc(db, "teams", t.id), { scores, scoreTimes: times, lastScoreAt: nowIso(), lastScoreBy: S.adminEmail + " (admin)" });
+      audit("scores_admin_edited", `T${t.number} full card set by ${S.adminEmail}`);
+      toast(`T${t.number} scorecard saved.`);
+      closeModal();
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 function openPenalty(teamId) {
@@ -2477,6 +2604,18 @@ function wireAdmin() {
       toast(sel.value ? `Team ${t?.number} → Hole ${sel.value}` : "Hole cleared.");
     } catch (e) { toast(e.message, true); }
   }));
+  document.querySelectorAll("[data-hcpedit]").forEach(inp => inp.addEventListener("change", async () => {
+    const [tid, idx] = inp.dataset.hcpedit.split("|");
+    const t = S.teams[tid]; if (!t) return;
+    const players = (t.players || []).map(p => ({ ...p }));
+    const v = parseFloat(inp.value);
+    players[Number(idx)].handicap = isNaN(v) ? null : v;
+    try {
+      await updateDoc(doc(db, "teams", tid), { players });
+      audit("handicap_set", `T${t.number} ${players[Number(idx)].name}: ${isNaN(v) ? "cleared" : v}`);
+      toast(`${players[Number(idx)].name}: HCP ${isNaN(v) ? DEFAULT_HANDICAP + " (default)" : v}`);
+    } catch (e) { toast(e.message, true); }
+  }));
   document.querySelectorAll("[data-split]").forEach(b => b.addEventListener("click", async () => {
     const t = S.teams[b.dataset.split];
     if (!t) return;
@@ -2537,6 +2676,20 @@ function wireAdmin() {
       toast("Contest winners saved — they're live for everyone.");
     } catch (e) { toast(e.message, true); }
   });
+  $("setHcpOn")?.addEventListener("change", async (e) => {
+    try { await updateDoc(doc(db, "config", "current"), { handicapOn: e.target.checked, updatedAt: nowIso() });
+      audit(e.target.checked ? "handicap_on" : "handicap_off", "by " + S.adminEmail);
+      toast(e.target.checked ? "NET scoring on — leaderboard shows GROSS & NET." : "NET scoring off.");
+    } catch (err) { toast(err.message, true); }
+  });
+  ["setHcpLow", "setHcpHigh"].forEach(id => $(id)?.addEventListener("change", async () => {
+    try { await updateDoc(doc(db, "config", "current"), {
+        hcpPctLow: Math.max(0, parseFloat($("setHcpLow").value) || 35),
+        hcpPctHigh: Math.max(0, parseFloat($("setHcpHigh").value) || 15),
+        updatedAt: nowIso() });
+      toast("Handicap percentages saved.");
+    } catch (err) { toast(err.message, true); }
+  }));
   $("setScoringTest")?.addEventListener("change", async (e) => {
     try {
       if (!e.target.checked) {
@@ -2577,6 +2730,37 @@ function wireAdmin() {
     toast("Added — hit Save settings to make it live.");
   }));
   document.querySelectorAll("[data-penalty]").forEach(b => b.addEventListener("click", () => openPenalty(b.dataset.penalty)));
+  document.querySelectorAll("[data-editteam]").forEach(b => b.addEventListener("click", () => openTeamScores(b.dataset.editteam)));
+  $("closeRoundBtn")?.addEventListener("click", async () => {
+    try { await updateDoc(doc(db, "config", "current"), { roundClosed: true, updatedAt: nowIso() });
+      audit("round_closed", "by " + S.adminEmail); toast("⏸ Round closed — player entry locked.");
+    } catch (e) { toast(e.message, true); }
+  });
+  $("reopenRoundBtn")?.addEventListener("click", async () => {
+    try { await updateDoc(doc(db, "config", "current"), { roundClosed: false, roundFinal: false, updatedAt: nowIso() });
+      audit("round_reopened", "by " + S.adminEmail); toast("Back live — players can enter scores again.");
+    } catch (e) { toast(e.message, true); }
+  });
+  $("finalizeBtn")?.addEventListener("click", () => {
+    const g = champion(false), nt = S.config.handicapOn ? champion(true) : null;
+    openModal(`<div class="modal-title">🏁 Finalize &amp; post winners?</div>
+      <p class="small">${g ? `🥇 GROSS: <b>T${g.t.number}</b> ${esc(g.t.customName || "")} (${relFmt(g.s.rel)})` : "No completed scores yet!"}
+      ${nt ? `<br>🥇 NET: <b>T${nt.t.number}</b> ${esc(nt.t.customName || "")} (${relFmt(nt.net)} net)` : ""}</p>
+      <p class="muted small">This locks it in and flashes congratulations on every phone. You can un-finalize if needed.</p>
+      <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-gold" id="mGo">Post winners 🏁</button></div>`);
+    $("mCancel").addEventListener("click", closeModal);
+    $("mGo").addEventListener("click", async () => {
+      try { await updateDoc(doc(db, "config", "current"), { roundFinal: true, roundClosed: true, updatedAt: nowIso() });
+        audit("round_finalized", "winners posted by " + S.adminEmail); closeModal(); toast("🏁 FINAL — winners posted everywhere!");
+      } catch (e) { toast(e.message, true); }
+    });
+  });
+  $("unfinalizeBtn")?.addEventListener("click", async () => {
+    try { await updateDoc(doc(db, "config", "current"), { roundFinal: false, updatedAt: nowIso() });
+      audit("round_unfinalized", "by " + S.adminEmail); toast("Un-finalized — back to closed/verifying.");
+    } catch (e) { toast(e.message, true); }
+  });
   document.querySelectorAll("[data-unpen]").forEach(b => b.addEventListener("click", () => {
     const [id, i] = b.dataset.unpen.split("|");
     removePenalty(id, Number(i));

@@ -373,3 +373,17 @@ main{padding:8px 14px}
 .mull-ft{ width:58px; }
 .entry-right .btn-block{ margin-top:2px; }
 @media(max-width:380px){ .entry-cols{ grid-template-columns:76px 1fr; } .entry-img{ height:250px; } }
+
+/* handicap + finalize */
+.hcp-line{ display:flex; align-items:center; gap:6px; margin:2px 0; white-space:nowrap; }
+.hcp-in{ width:52px; padding:4px 6px; }
+.lb-hcp{ display:block; font-size:.6rem; color:#A39A8E; font-weight:700; }
+.status-banner.closed-round{ background:#5B4A12; color:#FFC53D; font-weight:800; text-align:center; }
+.status-banner.final{ background:linear-gradient(90deg,#BF5700,#FFC53D); color:#fff; font-weight:800; text-align:center; letter-spacing:.05em; }
+.final-card{ border:2px solid var(--gold); }
+.final-row{ padding:6px 0; border-bottom:1px dashed var(--line); color:var(--white); }
+.final-row:last-child{ border-bottom:none; }
+.ts-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:6px; max-height:50vh; overflow-y:auto; }
+.ts-cell{ display:flex; flex-direction:column; gap:2px; font-size:.72rem; color:var(--white); }
+.ts-cell i{ color:#A39A8E; font-style:normal; }
+.ts-cell input{ width:100%; }
