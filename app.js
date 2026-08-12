@@ -347,14 +347,6 @@ function subscribeAll() {
     renderAll();
   });
 
-  onSnapshot(collection(db, "teams"), (qs) => {
-    S.teams = {};
-    qs.forEach(d => S.teams[d.id] = { id: d.id, ...d.data() });
-    renderAll();
-  });
-}
-
-function subscribePayments() {
   onSnapshot(collection(db, "extraPurchases"), (qs) => {
     S.purchases = {};
     qs.forEach(d => S.purchases[d.id] = { id: d.id, ...d.data() });
@@ -366,6 +358,14 @@ function subscribePayments() {
     maybeAnimateDraw();
     renderAll();
   });
+  onSnapshot(collection(db, "teams"), (qs) => {
+    S.teams = {};
+    qs.forEach(d => S.teams[d.id] = { id: d.id, ...d.data() });
+    renderAll();
+  });
+}
+
+function subscribePayments() {
   S.unsub.payments = onSnapshot(collection(db, "payments"), (qs) => {
     S.payments = {};
     qs.forEach(d => S.payments[d.id] = { id: d.id, ...d.data() });
@@ -1238,7 +1238,7 @@ function extrasShopHtml() {
     mine.forEach(p => {
       html += `<div class="shop-item ${p.drawnPrize ? "shop-won" : ""}">
         <span>${p.emoji || "⭐"} ${esc(p.extraName)}${Number(p.amt) > 1 ? ` ×${p.amt}` : ""}${p.free ? ` <span class="chip chip-mull">FREE</span>` : ""}${p.drawnPrize ? ` 🏆 P${p.drawnPrize}` : ""}</span>
-        <span class="shop-right">${p.free ? "—" : money(Number(p.price || 0))} ${p.paid ? `<span class="pay-ok">PAID ✓</span>` : (p.uid === S.user?.uid ? `<button class="btn btn-tiny btn-ghost" data-unbuy="${p.id}">Undo</button>` : `<span class="muted small">due</span>`)}</span>
+        <span class="shop-right">${p.free ? "—" : money(Number(p.price || 0))} ${p.paid ? `<span class="pay-ok">PAID ✓</span>` : `<span class="muted small">due</span> <button class="btn btn-tiny btn-ghost" data-unbuy="${p.id}">Undo</button>`}</span>
       </div>`;
     });
     html += `</div>`;
@@ -1276,8 +1276,10 @@ function randPick(arr) {
 }
 
 async function shopBuy(extraId, isDraw, asFree) {
+  if (S.buying && !asFree) return;           // one purchase at a time — no rapid-fire
   const t = myTeam(); if (!t) return toast("Claim your team first.", true);
   const list = extrasList(); if (!list.length) return;
+  if (!asFree) { S.buying = true; const bb = $("shopDraw"); if (bb) bb.disabled = true; }
   const c = S.config || {};
   let x, amt, price;
   if (asFree) {
@@ -1313,6 +1315,16 @@ async function shopBuy(extraId, isDraw, asFree) {
     } else {
       toast(`${x.emoji} ${x.name} added — chip's in the hat!`);
     }
+    // post-write safety: if a race pushed us past the cap, undo this purchase
+    if (!asFree && x.max) {
+      const totalNow = Object.values(S.purchases).filter(p => p.teamId === t.id && p.extraId === x.id && p.id !== newRef.id)
+        .reduce((a, p) => a + Number(p.amt || 0), 0) + Number((t.extrasPurchased || {})[x.id] || 0) + amt;
+      if (totalNow > x.max) {
+        await deleteDoc(doc(db, "extraPurchases", newRef.id));
+        S.buying = false;
+        return toast(`Whoa — ${x.name} just hit the team max. That one didn't count.`, true);
+      }
+    }
     // deal: every dealBuy paid chips earns dealFree free draws
     const db_ = Number(c.dealBuy), df = Number(c.dealFree);
     if (!asFree && db_ > 0 && df > 0) {
@@ -1323,6 +1335,7 @@ async function shopBuy(extraId, isDraw, asFree) {
       }
     }
   } catch (e) { toast(e.message, true); }
+  finally { S.buying = false; }
 }
 
 function payVenmoNote(handle, amount, noteText) {
@@ -2124,7 +2137,8 @@ function adminExtrasPaymentsHtml() {
     list.sort((a, b) => String(a.ts).localeCompare(String(b.ts))).forEach(p => {
       html += `<div class="shop-item"><span>${p.emoji || ""} ${esc(p.extraName)}${Number(p.amt) > 1 ? " +" + p.amt : ""}${p.free ? ` <span class="chip chip-mull">FREE</span>` : ""} <span class="muted small">${esc(p.byName || "")}</span></span>
         <span class="shop-right">${p.free ? "—" : money(Number(p.price || 0))}
-        ${p.free ? "" : (p.paid ? `<button class="btn btn-tiny btn-ghost" data-xpay="${p.id}|0">Unpay</button>` : `<button class="btn btn-tiny btn-gold" data-xpay="${p.id}|1">Paid</button>`)}</span></div>`;
+        ${p.free ? "" : (p.paid ? `<button class="btn btn-tiny btn-ghost" data-xpay="${p.id}|0">Unpay</button>` : `<button class="btn btn-tiny btn-gold" data-xpay="${p.id}|1">Paid</button>`)}
+        <button class="btn btn-tiny btn-ghost" data-xdel="${p.id}" title="Delete purchase">✕</button></span></div>`;
     });
     html += `</div>`;
   });
@@ -2657,6 +2671,23 @@ function wireAdmin() {
       audit(to === "1" ? "extras_paid" : "extras_unpaid", `purchase ${pid} by ${S.adminEmail}`);
       toast(to === "1" ? "Marked paid ✓" : "Marked unpaid.");
     } catch (e) { toast(e.message, true); }
+  }));
+  document.querySelectorAll("[data-xdel]").forEach(b => b.addEventListener("click", () => {
+    const p = S.purchases[b.dataset.xdel]; if (!p) return;
+    openModal(`<div class="modal-title">Delete this purchase?</div>
+      <p class="small">${p.emoji || ""} ${esc(p.extraName)} — ${p.free ? "FREE" : money(Number(p.price || 0))} · T${p.teamNumber} (${esc(p.byName || "")})</p>
+      <p class="muted small">Removes the chip from the prize hat and their tally. Use for no-pays or mistakes.</p>
+      <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-danger" id="mGo">Delete it</button></div>`);
+    $("mCancel").addEventListener("click", closeModal);
+    $("mGo").addEventListener("click", async () => {
+      try {
+        await deleteDoc(doc(db, "extraPurchases", p.id));
+        audit("extras_purchase_deleted", `T${p.teamNumber} ${p.extraName} (${p.byName}) by ${S.adminEmail}`);
+        toast("Purchase deleted.");
+        closeModal();
+      } catch (e) { toast(e.message, true); }
+    });
   }));
   document.querySelectorAll("[data-xpayall]").forEach(b => b.addEventListener("click", async () => {
     try {

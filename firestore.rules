@@ -124,9 +124,7 @@ service cloud.firestore {
         && request.resource.data.teamId is string
         && request.resource.data.price is number;
       allow delete: if isFinAdmin()
-        || (signedIn()
-            && resource.data.paid != true
-            && resource.data.uid == request.auth.uid);
+        || (signedIn() && resource.data.paid != true);
       allow update: if isFinAdmin();
     }
 
