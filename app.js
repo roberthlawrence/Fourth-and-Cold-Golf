@@ -1788,9 +1788,22 @@ function adminPairingHtml() {
     if (match) { suggestions.push([r, match]); used.add(r.id); used.add(match.id); }
   });
 
-  let html = `<div class="card admin-section"><div class="card-title"><span class="flag">🤝</span> Pair players</div>`;
+  const duos = Object.values(S.regs).filter(r => r.type === "team" && !r.teamId);
+  let html = `<div class="card admin-section"><div class="card-title"><span class="flag">🤝</span> Pair players</div>
+    <button class="btn btn-ghost btn-block" id="adminAddReg" style="margin-bottom:10px">＋ Add a registration manually (their email, not yours)</button>`;
+  if (duos.length) {
+    html += `<p class="small" style="color:var(--gold);font-weight:700">Un-paired duos — re-form or remove:</p>`;
+    duos.forEach(r => {
+      html += `<div class="suggest"><b>${(r.players || []).map(p => esc(p.name)).join(" & ")}</b> <span class="muted small">(team reg · ${esc(r.ownerEmail || "")})</span>
+        <div class="add-row" style="margin-top:6px">
+          <button class="btn btn-sm btn-gold" style="flex:2" data-reform="${r.id}">Re-form · Team ${nextTeamPreview()}</button>
+          <button class="btn btn-sm btn-ghost" data-regedit="${r.id}">✎</button>
+          <button class="btn btn-sm btn-ghost" data-regdel="${r.id}">🗑</button>
+        </div></div>`;
+    });
+  }
   if (!solo.length) {
-    html += `<p class="muted">No unpaired individuals right now.</p></div>`;
+    html += duos.length ? `</div>` : `<p class="muted">No unpaired players right now.</p></div>`;
     return html;
   }
   if (suggestions.length) {
@@ -1810,6 +1823,7 @@ function adminPairingHtml() {
       <span class="nm">${esc(p.name)}</span>
       <span class="muted small">hcp ${p.handicap !== "" && p.handicap != null ? esc(p.handicap) : DEFAULT_HANDICAP + " (assumed)"}</span>
       <span class="why">${r.preference === "partner" ? "wants: " + esc(r.partnerName) : "random 🎲"}</span>
+      <span class="pair-tools"><button class="btn btn-tiny btn-ghost" data-regedit="${r.id}">✎</button><button class="btn btn-tiny btn-ghost" data-regdel="${r.id}">🗑</button></span>
     </div>`;
   });
   html += `<button class="btn btn-primary btn-block" id="pairSelected" ${S.pairSel.length === 2 ? "" : "disabled"}>Pair selected (${S.pairSel.length}/2)</button>`;
@@ -1817,6 +1831,136 @@ function adminPairingHtml() {
   html += `<p class="muted small" style="margin-top:8px">Auto-assign balances handicaps: each team gets one lower-handicap and one higher-handicap player, without pairing the best with the worst. Blank handicap counts as ${DEFAULT_HANDICAP}.</p>`;
   html += `</div>`;
   return html;
+}
+
+async function reformTeamReg(regId) {
+  const r = S.regs[regId];
+  if (!r || r.teamId) return;
+  await runTransaction(db, async (tx) => {
+    const num = await nextTeamNumberTx(tx);
+    const teamRef = doc(collection(db, "teams"));
+    tx.set(teamRef, {
+      number: num, source: "registration", hole: "",
+      regIds: [regId], players: (r.players || []).map(p => ({ ...p })), createdAt: nowIso()
+    });
+    tx.update(doc(db, "registrations", regId), { teamId: teamRef.id, updatedAt: nowIso() });
+  });
+  audit("team_reformed", `${(r.players || []).map(p => p.name).join(" & ")} re-formed by ${S.adminEmail}`);
+  toast("Team re-formed.");
+}
+
+function openRegDelete(regId) {
+  const r = S.regs[regId]; if (!r) return;
+  const names = (r.players || []).map(p => p.name).join(" & ");
+  openModal(`<div class="modal-title">🗑 Remove this registration?</div>
+    <p class="small"><b>${esc(names)}</b> · ${r.type} · ${money(Number(r.price || 0))} · ${esc(r.ownerEmail || "")}</p>
+    <p class="muted small">Removes them from the event entirely. Their payment records stay in the log for reconciliation. This cannot be undone.</p>
+    <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+    <button class="btn btn-danger" id="mGo">Remove registration</button></div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  $("mGo").addEventListener("click", async () => {
+    try {
+      await deleteDoc(doc(db, "registrations", regId));
+      audit("registration_removed", `${names} (${r.type}) by ${S.adminEmail}`);
+      toast("Registration removed.");
+      closeModal();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+function openRegEdit(regId) {
+  const r = S.regs[regId]; if (!r) return;
+  const ps = r.players || [];
+  openModal(`<div class="modal-title">✎ Edit registration${r.teamId ? " (teamed)" : ""}</div>
+    <p class="muted small">Transfer to a new person by swapping name + email — payment stays with the registration.</p>
+    ${ps.map((p, i) => `
+      <label class="field-label">Player ${i + 1} name</label>
+      <input class="field" id="reN${i}" value="${esc(p.name || "")}">
+      <label class="field-label">Player ${i + 1} handicap (blank = ${DEFAULT_HANDICAP})</label>
+      <input class="field" id="reH${i}" inputmode="decimal" value="${p.handicap ?? ""}">`).join("")}
+    <label class="field-label">Owner email (who logs in to manage it)</label>
+    <input class="field" id="reEmail" inputmode="email" value="${esc(r.ownerEmail || "")}">
+    <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+    <button class="btn btn-gold" id="mGo">Save changes</button></div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  $("mGo").addEventListener("click", async () => {
+    const players = ps.map((p, i) => {
+      const h = $("reH" + i).value.trim();
+      return { name: $("reN" + i).value.trim(), handicap: h === "" ? "" : h };
+    });
+    if (players.some(p => p.name.length < 3 || !p.name.includes(" "))) return toast("First and last name for every player.", true);
+    const email = $("reEmail").value.trim().toLowerCase();
+    if (!email.includes("@")) return toast("Enter a valid owner email.", true);
+    try {
+      const key = emailKey(email);
+      if (!S.accounts[key]) {
+        await setDoc(doc(db, "accounts", key), { email, name: players[0].name, paidTotal: 0, createdAt: nowIso(), uid: null });
+        audit("account_created", `${players[0].name} <${email}> (by admin)`);
+      }
+      await updateDoc(doc(db, "registrations", regId), {
+        players, ownerKey: key, ownerEmail: email, ownerName: S.accounts[key]?.name || players[0].name, updatedAt: nowIso()
+      });
+      if (r.teamId) await syncTeamPlayers(r.teamId);
+      audit("registration_transferred", `${ps.map(p => p.name).join(" & ")} → ${players.map(p => p.name).join(" & ")} <${email}> by ${S.adminEmail}`);
+      toast("Registration updated.");
+      closeModal();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+function openAdminAddReg() {
+  const c = S.config;
+  openModal(`<div class="modal-title">＋ Add a registration</div>
+    <label class="field-label">Type</label>
+    <select class="field" id="arType"><option value="individual">Individual — ${money(c.indivPrice)}</option><option value="team">Team — ${money(c.teamPrice)}</option></select>
+    <label class="field-label">Player 1 — first &amp; last name</label>
+    <input class="field" id="arN0" placeholder="Sam Boykin">
+    <label class="field-label">Player 1 handicap (blank = ${DEFAULT_HANDICAP})</label>
+    <input class="field" id="arH0" inputmode="decimal">
+    <div id="arP2" class="hidden">
+      <label class="field-label">Player 2 — first &amp; last name</label>
+      <input class="field" id="arN1">
+      <label class="field-label">Player 2 handicap</label>
+      <input class="field" id="arH1" inputmode="decimal">
+    </div>
+    <label class="field-label">Their email (they'll log in with it)</label>
+    <input class="field" id="arEmail" inputmode="email" placeholder="player@email.com">
+    <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+    <button class="btn btn-gold" id="mGo">Add registration</button></div>`);
+  $("arType").addEventListener("change", () => $("arP2").classList.toggle("hidden", $("arType").value !== "team"));
+  $("mCancel").addEventListener("click", closeModal);
+  $("mGo").addEventListener("click", async () => {
+    const type = $("arType").value;
+    const email = $("arEmail").value.trim().toLowerCase();
+    if (!email.includes("@")) return toast("Enter their email.", true);
+    const players = [{ name: $("arN0").value.trim(), handicap: $("arH0").value.trim() }];
+    if (type === "team") players.push({ name: $("arN1").value.trim(), handicap: $("arH1").value.trim() });
+    if (players.some(p => p.name.length < 3 || !p.name.includes(" "))) return toast("First and last name for every player.", true);
+    try {
+      const key = emailKey(email);
+      if (!S.accounts[key]) {
+        await setDoc(doc(db, "accounts", key), { email, name: players[0].name, paidTotal: 0, createdAt: nowIso(), uid: null });
+        audit("account_created", `${players[0].name} <${email}> (by admin)`);
+      }
+      const owner = { ownerKey: key, ownerName: S.accounts[key]?.name || players[0].name, ownerEmail: email };
+      if (type === "team") {
+        await runTransaction(db, async (tx) => {
+          const num = await nextTeamNumberTx(tx);
+          const teamRef = doc(collection(db, "teams"));
+          const regRef = doc(collection(db, "registrations"));
+          tx.set(regRef, { type: "team", ...owner, players, preference: "", partnerName: "", teamId: teamRef.id,
+            price: Number(c.teamPrice), uid: null, createdAt: nowIso(), updatedAt: nowIso(), addedBy: S.adminEmail });
+          tx.set(teamRef, { number: num, source: "registration", hole: "", regIds: [regRef.id], players: players.map(p => ({ ...p })), createdAt: nowIso() });
+        });
+      } else {
+        await addDoc(collection(db, "registrations"), { type: "individual", ...owner, players, preference: "random", partnerName: "",
+          teamId: null, price: Number(c.indivPrice), uid: null, createdAt: nowIso(), updatedAt: nowIso(), addedBy: S.adminEmail });
+      }
+      audit("registration_added_admin", `${players.map(p => p.name).join(" & ")} (${type}) <${email}> by ${S.adminEmail}`);
+      toast(`${players[0].name.split(" ")[0]} is in — they can log in with ${email}.`);
+      closeModal();
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 function nextTeamPreview() {
@@ -1897,13 +2041,12 @@ function adminHolesHtml() {
   const hOn = !!S.config.handicapOn;
   html += `<div class="table-scroll"><table class="admin-table"><tr><th>Team</th><th>Players &amp; HCP</th><th>Hole</th>${hOn ? "<th>Adj</th>" : ""}<th></th></tr>`;
   teams.forEach(t => {
-    const splittable = t.source !== "registration";
     html += `<tr>
       <td><b>${t.number}</b></td>
       <td class="small">${(t.players || []).map((p, i) => `<span class="hcp-line">${esc(p.name)} <input class="field field-mini hcp-in" inputmode="decimal" data-hcpedit="${t.id}|${i}" value="${p.handicap ?? ""}" placeholder="${DEFAULT_HANDICAP}"></span>`).join("")}</td>
       <td><select class="hole-select" data-hole="${t.id}">${holeOptions(t.hole || "")}</select></td>
       ${hOn ? `<td><b>−${teamHcp(t)}</b></td>` : ""}
-      <td>${splittable ? `<button class="btn btn-tiny btn-ghost" data-split="${t.id}" title="Undo this pairing">Split</button>` : ""}</td>
+      <td><button class="btn btn-tiny btn-ghost" data-split="${t.id}" title="Dissolve this team — registrations go back to the queue">Un-pair</button></td>
     </tr>`;
   });
   html += `</table></div><p class="muted small" style="margin-top:8px">Saves instantly. Blank handicap = ${DEFAULT_HANDICAP}.${hOn ? ` Adj = ${Number(S.config.hcpPctLow ?? 35)}% of the lower handicap + ${Number(S.config.hcpPctHigh ?? 15)}% of the higher, rounded — subtracted from gross for NET.` : ""}</p></div>`;
@@ -2677,6 +2820,10 @@ function wireAdmin() {
       toast(`${players[Number(idx)].name}: HCP ${isNaN(v) ? DEFAULT_HANDICAP + " (default)" : v}`);
     } catch (e) { toast(e.message, true); }
   }));
+  $("adminAddReg")?.addEventListener("click", openAdminAddReg);
+  document.querySelectorAll("[data-reform]").forEach(b => b.addEventListener("click", () => reformTeamReg(b.dataset.reform).catch(e => toast(e.message, true))));
+  document.querySelectorAll("[data-regdel]").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); openRegDelete(b.dataset.regdel); }));
+  document.querySelectorAll("[data-regedit]").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); openRegEdit(b.dataset.regedit); }));
   document.querySelectorAll("[data-split]").forEach(b => b.addEventListener("click", async () => {
     const t = S.teams[b.dataset.split];
     if (!t) return;
@@ -2686,7 +2833,7 @@ function wireAdmin() {
       }
       await deleteDoc(doc(db, "teams", t.id));
       audit("team_split", `Team ${t.number} (${(t.players || []).map(p => p.name).join(" & ")})`);
-      toast(`Team ${t.number} split — both players are back in the pairing pool.`);
+      toast(`Team ${t.number} un-paired — registration${(t.regIds || []).length > 1 ? "s are" : " is"} back in the queue.`);
     } catch (e) { toast(e.message, true); }
   }));
   $("drawPrizeBtn")?.addEventListener("click", () => {

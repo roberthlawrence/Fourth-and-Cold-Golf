@@ -387,3 +387,6 @@ main{padding:8px 14px}
 .ts-cell{ display:flex; flex-direction:column; gap:2px; font-size:.72rem; color:var(--white); }
 .ts-cell i{ color:#A39A8E; font-style:normal; }
 .ts-cell input{ width:100%; }
+
+/* pairing tools */
+.pair-tools{ display:flex; gap:4px; margin-left:auto; }
