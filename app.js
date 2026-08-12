@@ -1257,10 +1257,12 @@ function wireShop() {
   $("shopDraw")?.addEventListener("click", () => shopBuy(null, true));
   document.querySelectorAll("[data-shopbuy]").forEach(b => b.addEventListener("click", () => shopBuy(b.dataset.shopbuy, false)));
   document.querySelectorAll("[data-unbuy]").forEach(b => b.addEventListener("click", async () => {
+    const p = S.purchases[b.dataset.unbuy];
     try {
       await deleteDoc(doc(db, "extraPurchases", b.dataset.unbuy));
       audit("extra_purchase_undone", `by ${S.me?.name || "?"}`);
       toast("Purchase removed.");
+      if (p && !p.free) await reconcileFreebies(p.teamId, [p.id]);
     } catch (e) { toast(e.message, true); }
   }));
   document.querySelectorAll("[data-payextras]").forEach(b => b.addEventListener("click", () => {
@@ -1283,7 +1285,9 @@ async function shopBuy(extraId, isDraw, asFree) {
   const c = S.config || {};
   let x, amt, price;
   if (asFree) {
-    x = randPick(list);                          // deal freebies honor the deal — caps don't apply
+    const pool = drawPool(t);                    // freebies obey caps too — auto-route to what's left
+    if (!pool.length) { toast("🔥 Deal earned — but your team is at max on every extra, so there's nothing left to give.", true); return; }
+    x = randPick(pool);
     amt = bundleAmt(x);
     price = 0;
   } else if (isDraw) {
@@ -1315,14 +1319,14 @@ async function shopBuy(extraId, isDraw, asFree) {
     } else {
       toast(`${x.emoji} ${x.name} added — chip's in the hat!`);
     }
-    // post-write safety: if a race pushed us past the cap, undo this purchase
-    if (!asFree && x.max) {
+    // post-write safety: if a race pushed us past the cap, undo this purchase (paid or free)
+    if (x.max) {
       const totalNow = Object.values(S.purchases).filter(p => p.teamId === t.id && p.extraId === x.id && p.id !== newRef.id)
         .reduce((a, p) => a + Number(p.amt || 0), 0) + Number((t.extrasPurchased || {})[x.id] || 0) + amt;
       if (totalNow > x.max) {
         await deleteDoc(doc(db, "extraPurchases", newRef.id));
         S.buying = false;
-        return toast(`Whoa — ${x.name} just hit the team max. That one didn't count.`, true);
+        return toast(asFree ? `Free draw landed on ${x.name} but the team just maxed it — no freebie this time.` : `Whoa — ${x.name} just hit the team max. That one didn't count.`, true);
       }
     }
     // deal: every dealBuy paid chips earns dealFree free draws
@@ -1336,6 +1340,32 @@ async function shopBuy(extraId, isDraw, asFree) {
     }
   } catch (e) { toast(e.message, true); }
   finally { S.buying = false; }
+}
+
+// After any purchase removal: freebies must match what the paid count still earns.
+// entitled = floor(paidCount / dealBuy) * dealFree; excess free chips fall off newest-first.
+async function reconcileFreebies(teamId, excludeIds) {
+  const ex = new Set(excludeIds || []);
+  const c = S.config || {};
+  const db_ = Number(c.dealBuy), df = Number(c.dealFree);
+  const mine = Object.values(S.purchases).filter(p => p.teamId === teamId && !ex.has(p.id));
+  const paidCount = mine.filter(p => !p.free).length;
+  const entitled = (db_ > 0 && df > 0) ? Math.floor(paidCount / db_) * df : 0;
+  const frees = mine.filter(p => p.free && p.drawnPrize == null)
+    .sort((a, b) => String(b.ts).localeCompare(String(a.ts)));   // newest first
+  const totalFrees = mine.filter(p => p.free).length;
+  let excess = totalFrees - entitled;
+  let removed = 0;
+  for (const f of frees) {
+    if (excess <= 0) break;
+    try { await deleteDoc(doc(db, "extraPurchases", f.id)); removed++; excess--; }
+    catch (e) { break; }
+  }
+  if (removed) {
+    audit("freebies_reconciled", `team ${teamId}: removed ${removed} free draw(s) — paid count now earns ${entitled}`);
+    toast(`${removed} free draw${removed > 1 ? "s" : ""} came off with it — the deal recalculates as you undo.`);
+  }
+  if (excess > 0) audit("freebies_reconcile_note", `team ${teamId}: ${excess} excess freebie(s) already won prizes — left in place`);
 }
 
 function payVenmoNote(handle, amount, noteText) {
@@ -1983,8 +2013,14 @@ function openExtrasModal(teamId) {
     } catch (e) { toast(e.message, true); }
   }));
   document.querySelectorAll("[data-buydel]").forEach(b => b.addEventListener("click", async () => {
-    try { await deleteDoc(doc(db, "extraPurchases", b.dataset.buydel)); audit("extras_purchase_deleted", `T${t.number} by ${S.adminEmail}`); toast("Purchase deleted."); closeModal(); }
-    catch (e) { toast(e.message, true); }
+    const p = S.purchases[b.dataset.buydel];
+    try {
+      await deleteDoc(doc(db, "extraPurchases", b.dataset.buydel));
+      audit("extras_purchase_deleted", `T${t.number} by ${S.adminEmail}`);
+      toast("Purchase deleted.");
+      closeModal();
+      if (p && !p.free) await reconcileFreebies(p.teamId, [p.id]);
+    } catch (e) { toast(e.message, true); }
   }));
   $("exGo").addEventListener("click", async () => {
     const bought = {};
@@ -2686,6 +2722,7 @@ function wireAdmin() {
         audit("extras_purchase_deleted", `T${p.teamNumber} ${p.extraName} (${p.byName}) by ${S.adminEmail}`);
         toast("Purchase deleted.");
         closeModal();
+        if (!p.free) await reconcileFreebies(p.teamId, [p.id]);
       } catch (e) { toast(e.message, true); }
     });
   }));
