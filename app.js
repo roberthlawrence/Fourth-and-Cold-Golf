@@ -1192,6 +1192,8 @@ function testWheel() {
 // EXTRAS SHOP — buy in-app; every purchase is a chip in the prize hat
 // ---------------------------------------------------------------------
 function bundleAmt(x) { return x.unit === "each" ? 1 : (x.bundle || 5); }  // one purchase grants this many units
+function extraHasRoom(t, x) { return !x.max || extraPurchased(t, x.id) + bundleAmt(x) <= x.max; }
+function drawPool(t) { return extrasList().filter(x => extraHasRoom(t, x)); }
 
 function extrasShopHtml() {
   const list = extrasList();
@@ -1211,8 +1213,13 @@ function extrasShopHtml() {
   if (salesClosed) {
     // no buy buttons once live
   } else if (mode === "draw") {
-    html += `<p class="muted small" style="margin:6px 0 10px">Every draw is random — you might pull ${list.map(x => x.name).join(", ")}. Every chip you buy also goes in the hat for the prize drawings.</p>
-      <button class="btn btn-gold btn-block" id="shopDraw">🎲 Draw your extra (${list.map(x => esc(x.name)).join(" · ")}) — ${money(Number(c.drawPrice || 10))}</button>`;
+    const pool = drawPool(t);
+    if (!pool.length) {
+      html += `<p class="muted small" style="margin:6px 0 10px">🔒 Your team has hit the max on every extra — chips already bought stay in the prize hat.</p>`;
+    } else {
+      html += `<p class="muted small" style="margin:6px 0 10px">Every draw is random — you might pull ${pool.map(x => x.name).join(", ")}. Anything your team has maxed out drops from the draw automatically. Every chip also goes in the hat for the prize drawings.</p>
+        <button class="btn btn-gold btn-block" id="shopDraw">🎲 Draw your extra (${pool.map(x => esc(x.name)).join(" · ")}) — ${money(Number(c.drawPrice || 10))}</button>`;
+    }
   } else {
     html += `<p class="muted small" style="margin:6px 0 10px">Pick what you want — every purchase is also a chip in the hat for the prize drawings.</p>`;
     list.forEach(x => {
@@ -1273,17 +1280,21 @@ async function shopBuy(extraId, isDraw, asFree) {
   const list = extrasList(); if (!list.length) return;
   const c = S.config || {};
   let x, amt, price;
-  if (isDraw || asFree) {
-    x = randPick(list);
+  if (asFree) {
+    x = randPick(list);                          // deal freebies honor the deal — caps don't apply
     amt = bundleAmt(x);
-    price = asFree ? 0 : Number(c.drawPrice || 10);
+    price = 0;
+  } else if (isDraw) {
+    const pool = drawPool(t);                    // paid draws auto-route to whatever still has room
+    if (!pool.length) return toast("Your team is at the max on every extra.", true);
+    x = randPick(pool);
+    amt = bundleAmt(x);
+    price = Number(c.drawPrice || 10);
   } else {
     x = list.find(e => e.id === extraId); if (!x) return;
     amt = bundleAmt(x);
     price = Number(x.price);   // line price = price per purchase (per bundle)
-    if (x.max && extraPurchased(t, x.id) + (x.unit === "each" ? 1 : amt) > x.max * (x.unit === "each" ? 1 : amt))
-      { /* soft cap: compare in units purchased */ }
-    if (x.max && extraPurchased(t, x.id) >= x.max * (x.unit === "each" ? 1 : 1) && x.unit === "each") return toast(`Max ${x.max} ${x.name} per team.`, true);
+    if (!extraHasRoom(t, x)) return toast(`Max ${x.max}${x.unit === "each" ? "" : " " + x.unit} of ${x.name} per team.`, true);
   }
   try {
     const newRef = await addDoc(collection(db, "extraPurchases"), {
