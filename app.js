@@ -945,8 +945,8 @@ function renderLive() {
     html += `<div class="card"><div class="card-title"><span class="flag">🔴</span> Live scoring</div>
       <p class="muted">Scoring opens on event day. Check back at the shotgun start — the leaderboard will be right here.</p>
       ${c.rulesText ? `<button class="btn btn-ghost btn-block" id="rulesBtn" style="margin-top:8px">📜 Tournament rules</button>` : ""}</div>`;
-    $("tab-live").innerHTML = html + extrasShopHtml() + contestsHtml() + extrasSaleHtml() + prizeWinnersHtml() + holeGuideHtml() + leaderboardHtml(teams, false);
-    wireHoleZoom(); wireShop(); wireRulesBtn();
+    $("tab-live").innerHTML = html + (myTeam() ? "" : claimCardHtml(false)) + extrasShopHtml() + contestsHtml() + extrasSaleHtml() + prizeWinnersHtml() + holeGuideHtml() + leaderboardHtml(teams, false);
+    wireHoleZoom(); wireShop(); wireRulesBtn(); wireClaim();
     maybeShowRules();
     return;
   }
@@ -1426,23 +1426,38 @@ function extrasSaleHtml() {
   let html = `<div class="card"><div class="card-title"><span class="flag">🛒</span> Day-of extras — cash or Venmo at the tent</div><div class="extras-list">`;
   list.forEach(x => {
     html += `<div class="extra-row"><span class="extra-emoji">${x.emoji}</span>
-      <span class="extra-info"><b>${esc(x.name)}</b> — ${money(x.price)}${x.unit === "each" ? " each" : "/" + esc(x.unit)}${x.max ? ` · max ${x.max}${x.unit === "each" ? "" : " " + esc(x.unit)} per person${x.max && minehave ? ` (you: ${minehave})` : ""}` : ""}
+      <span class="extra-info"><b>${esc(x.name)}</b> — ${money(x.price)}${x.unit === "each" ? " each" : "/" + esc(x.unit)}${x.max ? ` · max ${x.max}${x.unit === "each" ? "" : " " + esc(x.unit)} per person` : ""}
       ${x.note ? `<br><span class="muted small">${esc(x.note)}</span>` : ""}</span></div>`;
   });
   return html + `</div></div>`;
 }
 
+function claimCardHtml(forScoring) {
+  const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
+  if (!teams.length) return "";
+  return `<div class="card"><div class="card-title"><span class="flag">⛳</span> ${forScoring ? "Enter scores" : "Find your team"}</div>
+    <p class="muted">${forScoring ? "Pick your team — either player can keep score." : "Claim your team to buy extras and get in the prize drawings — either player can do it."}</p>
+    <select class="field" id="claimTeam"><option value="">Select your team…</option>
+      ${teams.map(x => `<option value="${x.id}">T${x.number} — ${esc(x.customName || (x.players||[]).map(p=>p.name).join(" & "))}</option>`).join("")}
+    </select>
+    <button class="btn btn-primary btn-block" id="claimBtn">This is my team</button></div>`;
+}
+
+function wireClaim() {
+  $("claimBtn")?.addEventListener("click", async () => {
+    const id = $("claimTeam").value;
+    if (!id) return toast("Pick your team from the list.", true);
+    try {
+      await updateDoc(doc(db, "accounts", S.me.id), { myTeamId: id });
+      audit("team_claimed", `${S.me.name} → T${S.teams[id]?.number}`);
+      toast(`Locked in — T${S.teams[id]?.number} is yours.`);
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
 function myScoringHtml() {
   const t = myTeam();
-  if (!t) {
-    const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
-    return `<div class="card"><div class="card-title"><span class="flag">⛳</span> Enter scores</div>
-      <p class="muted">Pick your team — either player can keep score.</p>
-      <select class="field" id="claimTeam"><option value="">Select your team…</option>
-        ${teams.map(x => `<option value="${x.id}">T${x.number} — ${esc(x.customName || (x.players||[]).map(p=>p.name).join(" & "))}</option>`).join("")}
-      </select>
-      <button class="btn btn-primary btn-block" id="claimBtn">This is my team</button></div>`;
-  }
+  if (!t) return claimCardHtml(true);
 
   const s = teamScore(t);
   const seq = nextSeq(t);
@@ -2160,7 +2175,7 @@ function adminHolesHtml() {
   teams.forEach(t => {
     html += `<tr>
       <td><b>${t.number}</b></td>
-      <td class="small">${(t.players || []).map((p, i) => `<span class="hcp-line"><input type="checkbox" class="chk-in" data-checkin="${t.id}|${i}" ${p.checkedIn ? "checked" : ""} title="checked in at registration">${esc(p.name)} <input class="field field-mini hcp-in" inputmode="decimal" data-hcpedit="${t.id}|${i}" value="${p.handicap ?? ""}" placeholder="${DEFAULT_HANDICAP}"></span>`).join("")}</td>
+      <td class="small">${(t.players || []).map((p, i) => `<span class="hcp-line"><input type="checkbox" class="chk-in" data-checkin="${t.id}|${i}" ${p.checkedIn ? "checked" : ""} title="checked in at registration">${esc(p.name)} <input class="field field-mini hcp-in" inputmode="decimal" data-hcpedit="${t.id}|${i}" value="${p.handicap ?? ""}" placeholder="${DEFAULT_HANDICAP}"><button class="btn btn-tiny btn-ghost" data-linkmail="${t.id}|${i}" title="Give this player a login email">✉</button></span>`).join("")}</td>
       <td><select class="hole-select" data-hole="${t.id}">${holeOptions(t.hole || "")}</select></td>
       ${hOn ? `<td><b>−${teamHcp(t)}</b></td>` : ""}
       <td><button class="btn btn-tiny btn-ghost" data-split="${t.id}" title="Dissolve this team — registrations go back to the queue">Un-pair</button></td>
@@ -2480,6 +2495,34 @@ async function resetDrawings() {
     audit("drawings_reset", "all prize draws cleared by " + S.adminEmail);
     toast("Drawings reset — every chip is back in the hat, next draw is Prize 1.");
   } catch (e) { toast(e.message, true); }
+}
+
+function openLinkEmail(teamId, idx) {
+  const t = S.teams[teamId]; if (!t) return;
+  const p = (t.players || [])[idx]; if (!p) return;
+  const linked = Object.values(S.accounts).find(a => a.myTeamId === teamId && (a.name || "").trim().toLowerCase() === (p.name || "").trim().toLowerCase());
+  openModal(`<div class="modal-title">✉ Login for ${esc(p.name)}</div>
+    <p class="muted small">They log in with this email and land straight on T${t.number} — no claiming needed. ${linked ? `Currently linked: <b>${esc(linked.email)}</b>` : "No email linked yet."}</p>
+    <label class="field-label">Their email</label>
+    <input class="field" id="lmEmail" inputmode="email" value="${linked ? esc(linked.email) : ""}" placeholder="player@email.com">
+    <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+    <button class="btn btn-gold" id="mGo">Link email</button></div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  $("mGo").addEventListener("click", async () => {
+    const email = $("lmEmail").value.trim().toLowerCase();
+    if (!email.includes("@")) return toast("Enter a valid email.", true);
+    try {
+      const key = emailKey(email);
+      if (S.accounts[key]) {
+        await updateDoc(doc(db, "accounts", key), { myTeamId: teamId });
+      } else {
+        await setDoc(doc(db, "accounts", key), { email, name: p.name, paidTotal: 0, myTeamId: teamId, createdAt: nowIso(), uid: null });
+      }
+      audit("player_email_linked", `${p.name} <${email}> → T${t.number} by ${S.adminEmail}`);
+      toast(`${p.name.split(" ")[0]} can log in with ${email} — lands on T${t.number}.`);
+      closeModal();
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 function openTeamScores(teamId) {
@@ -2963,6 +3006,10 @@ function wireAdmin() {
       } catch (e) { toast(e.message, true); }
     });
   });
+  document.querySelectorAll("[data-linkmail]").forEach(b => b.addEventListener("click", () => {
+    const [tid, idx] = b.dataset.linkmail.split("|");
+    openLinkEmail(tid, Number(idx));
+  }));
   document.querySelectorAll("[data-checkin]").forEach(cb => cb.addEventListener("change", async () => {
     const [tid, idx] = cb.dataset.checkin.split("|");
     const t = S.teams[tid]; if (!t) return;
