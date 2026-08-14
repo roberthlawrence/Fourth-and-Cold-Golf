@@ -118,6 +118,8 @@ function defaultConfig(bootEmail) {
     hcpPctHigh: 15,         // % of higher player's handicap
     roundClosed: false,     // entry locked, admins verifying
     roundFinal: false,      // winners posted
+    placesGross: 1,         // podium places awarded (1-3)
+    placesNet: 2,
     updatedAt: nowIso()
   };
 }
@@ -186,6 +188,10 @@ function champion(useNet) {
   const done = standings(useNet).filter(x => x.s.played > 0);
   return done.length ? done[0] : null;
 }
+function placers(useNet, n) {
+  return standings(useNet).filter(x => x.s.played > 0).slice(0, Math.max(1, Math.min(3, n || 1)));
+}
+const MEDALS = ["🥇", "🥈", "🥉"];
 
 function teamScore(t) {
   let played = 0, rel = 0, strokes = 0;
@@ -279,6 +285,7 @@ const HOLE_INFO = {
   9: { hcp: 4,  blue: 374, white: 320, red: 244 }
 };
 function holeImgSrc(ph) { return `holes/hole-${ph}.jpg`; }
+function courseHole18(t, seq) { const ph = physHole(t, seq); return seq > pars().length ? ph + pars().length : ph; }
 
 function myTeam() {
   if (S.me?.myTeamId && S.teams[S.me.myTeamId]) return S.teams[S.me.myTeamId];
@@ -869,6 +876,9 @@ function renderRoster() {
   const soloRegs = Object.values(S.regs)
     .filter(r => r.type === "individual" && !r.teamId)
     .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+  const duoRegs = Object.values(S.regs)
+    .filter(r => r.type === "team" && !r.teamId)
+    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
   const totalPlayers = spotsUsed();
   const anyHoles = teams.some(t => t.hole);
 
@@ -876,7 +886,7 @@ function renderRoster() {
   <div class="roster-count">
     <span class="chip">Players <b>${totalPlayers}</b></span>
     <span class="chip">Teams set <b>${teams.length}</b></span>
-    <span class="chip">Awaiting pairing <b>${soloRegs.length}</b></span>
+    <span class="chip">Awaiting pairing <b>${soloRegs.length + duoRegs.length * 2}</b></span>
   </div>`;
 
   html += `<div class="card"><div class="card-title"><span class="flag">⛳</span> Set teams</div>`;
@@ -895,12 +905,18 @@ function renderRoster() {
   }
   html += `</div>`;
 
-  html += `<div class="card"><div class="card-title"><span class="flag">🎲</span> Individuals — not yet paired</div>`;
-  if (!soloRegs.length) {
+  html += `<div class="card"><div class="card-title"><span class="flag">🎲</span> Waiting for a team</div>`;
+  if (!soloRegs.length && !duoRegs.length) {
     html += `<p class="muted">Everyone's on a team.</p>`;
   } else {
     html += `<div class="scorecard"><table>
       <tr><th>Player</th><th>Pairing</th></tr>`;
+    duoRegs.forEach(r => {
+      html += `<tr>
+        <td><b>${(r.players || []).map(p => esc(p.name)).join(" &amp; ")}</b></td>
+        <td><span class="pref-note">registered together — team # coming</span></td>
+      </tr>`;
+    });
     soloRegs.forEach(r => {
       const p = r.players[0] || {};
       html += `<tr>
@@ -940,13 +956,19 @@ function renderLive() {
   }
   if (c.rulesText) html += `<button class="btn btn-ghost btn-block" id="rulesBtn" style="margin-bottom:10px">📜 Tournament rules</button>`;
   if (c.roundFinal) {
-    const g = champion(false), nt = c.handicapOn ? champion(true) : null;
+    const gp = placers(false, c.placesGross);
+    const np = c.handicapOn ? placers(true, c.placesNet) : [];
     const mine = myTeam();
-    if (g && mine && g.t.id === mine.id) html += `<div class="winner-banner">🏆🏆 CONGRATULATIONS — GROSS CHAMPIONS! 🏆🏆<br><span class="small">${relFmt(g.s.rel)} · ${teamLabel(g.t)}</span></div>`;
-    if (nt && mine && nt.t.id === mine.id && (!g || g.t.id !== mine.id)) html += `<div class="winner-banner">🏆🏆 CONGRATULATIONS — NET CHAMPIONS! 🏆🏆<br><span class="small">${relFmt(nt.net)} net · ${teamLabel(nt.t)}</span></div>`;
+    const PLACE = ["", "CHAMPIONS", "2ND PLACE", "3RD PLACE"];
+    if (mine) {
+      const gi = gp.findIndex(x => x.t.id === mine.id);
+      const ni = np.findIndex(x => x.t.id === mine.id);
+      if (gi >= 0) html += `<div class="winner-banner">🏆 CONGRATULATIONS — GROSS ${PLACE[gi + 1]}! 🏆<br><span class="small">${relFmt(gp[gi].s.rel)} · ${teamLabel(mine)}</span></div>`;
+      if (ni >= 0) html += `<div class="winner-banner">🏆 CONGRATULATIONS — NET ${PLACE[ni + 1]}! 🏆<br><span class="small">${relFmt(np[ni].net)} net · ${teamLabel(mine)}</span></div>`;
+    }
     html += `<div class="card final-card"><div class="card-title"><span class="flag">🏁</span> FINAL RESULTS</div>
-      ${g ? `<div class="final-row">🥇 <b>GROSS champion:</b> ${teamLabel(g.t)} — ${relFmt(g.s.rel)}</div>` : ""}
-      ${nt ? `<div class="final-row">🥇 <b>NET champion:</b> ${teamLabel(nt.t)} — ${relFmt(nt.net)} <span class="muted small">(gross ${relFmt(nt.s.rel)}, −${nt.hcp})</span></div>` : ""}
+      ${gp.map((x, i) => `<div class="final-row">${MEDALS[i]} <b>GROSS ${i === 0 ? "champion" : ["", "2nd", "3rd"][i]}:</b> ${teamLabel(x.t)} — ${relFmt(x.s.rel)}</div>`).join("")}
+      ${np.map((x, i) => `<div class="final-row">${MEDALS[i]} <b>NET ${i === 0 ? "champion" : ["", "2nd", "3rd"][i]}:</b> ${teamLabel(x.t)} — ${relFmt(x.net)} <span class="muted small">(gross ${relFmt(x.s.rel)}, −${x.hcp})</span></div>`).join("")}
       ${c.contestLDWinner ? `<div class="final-row">💪 <b>Longest drive:</b> ${esc(c.contestLDWinner)}</div>` : ""}
       ${c.contestCPWinner ? `<div class="final-row">🎯 <b>Closest to the pin:</b> ${esc(c.contestCPWinner)}</div>` : ""}
     </div>`;
@@ -995,13 +1017,9 @@ function openRules(mustAck) {
 
 function leaderboardHtml(teams, open) {
   const hOn = !!S.config.handicapOn;
-  let html = `<div class="card"><div class="card-title"><span class="flag">🏆</span> Leaderboard${hOn ? " — GROSS" : ""}</div>`;
+  let html = `<div class="card"><div class="card-title"><span class="flag">🏆</span> Leaderboard${hOn ? ` <span class="muted small">ranked by NET</span>` : ""}</div>`;
   if (!teams.length) return html + `<p class="muted">No teams yet.</p></div>`;
-  html += lbListHtml(false, open);
-  if (hOn) {
-    html += `<div class="card-title" style="margin-top:14px"><span class="flag">♿</span> Leaderboard — NET <span class="muted small">(after handicap)</span></div>`;
-    html += lbListHtml(true, open);
-  }
+  html += lbListHtml(hOn, open);   // one table — net-ranked when handicap is on, gross shown beside it
   return html + (open ? `<p class="muted small" style="margin-top:8px">Every score is timestamped and logged with who entered it. Teams more than ${Number(S.config.paceThreshold || 3)} holes behind the field get flagged — keep it honest, enter as you go. Committee reserves the right to assess penalties or remove teams for score dumping.</p>` : "") + `</div>`;
 }
 
@@ -1030,11 +1048,12 @@ function lbListHtml(useNet, open) {
         ${t.lastScoreAt ? `<span class="lb-upd">upd ${agoFmt(t.lastScoreAt)}</span>` : ""}
       </span>
       <span class="lb-chips">
-        ${useNet ? "" : `${s.pen ? `<span class="chip chip-pen" title="${esc((t.penalties||[]).map(p=>p.strokes+" — "+p.note).join("; "))}">+${s.pen} pen</span>` : ""}
+        ${s.pen ? `<span class="chip chip-pen" title="${esc((t.penalties||[]).map(p=>p.strokes+" — "+p.note).join("; "))}">+${s.pen} pen</span>` : ""}
         ${exChips}
-        ${behind ? `<span class="chip chip-behind">⏳ ${med - s.played} behind</span>` : ""}`}
+        ${behind ? `<span class="chip chip-behind">⏳ ${med - s.played} behind</span>` : ""}
       </span>
-      <span class="lb-score ${val < 0 ? "under" : val > 0 ? "over" : ""}">${s.played ? relFmt(val) : "—"}${useNet ? `<span class="lb-hcp">−${x.hcp}</span>` : ""}</span>
+      ${useNet ? `<span class="lb-score lb-gross ${s.rel < 0 ? "under" : s.rel > 0 ? "over" : ""}"><i>G</i>${s.played ? relFmt(s.rel) : "—"}</span>` : ""}
+      <span class="lb-score ${val < 0 ? "under" : val > 0 ? "over" : ""}">${useNet ? "<i>N</i>" : ""}${s.played ? relFmt(val) : "—"}${useNet ? `<span class="lb-hcp">−${x.hcp}</span>` : ""}</span>
       <span class="lb-thru">${done ? "F" : s.played ? `thru ${s.played}` : "not started"} <span class="lb-start">(S${startHole(t)}${esc(String(t.hole||"").replace(/^\d+/,""))})</span></span>
     </div>`;
   });
@@ -1192,8 +1211,15 @@ function testWheel() {
 // EXTRAS SHOP — buy in-app; every purchase is a chip in the prize hat
 // ---------------------------------------------------------------------
 function bundleAmt(x) { return x.unit === "each" ? 1 : (x.bundle || 5); }  // one purchase grants this many units
-function extraHasRoom(t, x) { return !x.max || extraPurchased(t, x.id) + bundleAmt(x) <= x.max; }
-function drawPool(t) { return extrasList().filter(x => extraHasRoom(t, x)); }
+function personPurchased(byKey, extraId) {
+  return Object.values(S.purchases).filter(p => p.byKey === byKey && p.extraId === extraId)
+    .reduce((a, p) => a + Number(p.amt || 0), 0);
+}
+function extraHasRoom(t, x, byKey) {   // caps are PER PERSON — team pool still shared for usage
+  const who = byKey ?? S.me?.id;
+  return !x.max || personPurchased(who, x.id) + bundleAmt(x) <= x.max;
+}
+function drawPool(t, byKey) { return extrasList().filter(x => extraHasRoom(t, x, byKey)); }
 
 function extrasShopHtml() {
   const list = extrasList();
@@ -1215,19 +1241,20 @@ function extrasShopHtml() {
   } else if (mode === "draw") {
     const pool = drawPool(t);
     if (!pool.length) {
-      html += `<p class="muted small" style="margin:6px 0 10px">🔒 Your team has hit the max on every extra — chips already bought stay in the prize hat.</p>`;
+      html += `<p class="muted small" style="margin:6px 0 10px">🔒 You've hit your personal max on every extra — your partner can still buy theirs. Chips already bought stay in the prize hat.</p>`;
     } else {
-      html += `<p class="muted small" style="margin:6px 0 10px">Every draw is random — you might pull ${pool.map(x => x.name).join(", ")}. Anything your team has maxed out drops from the draw automatically. Every chip also goes in the hat for the prize drawings.</p>
+      html += `<p class="muted small" style="margin:6px 0 10px">Every draw is random — you might pull ${pool.map(x => x.name).join(", ")}. Anything you've personally maxed drops from your draw automatically (caps are per person). Every chip also goes in the hat for the prize drawings.</p>
         <button class="btn btn-gold btn-block" id="shopDraw">🎲 Draw your extra (${pool.map(x => esc(x.name)).join(" · ")}) — ${money(Number(c.drawPrice || 10))}</button>`;
     }
   } else {
     html += `<p class="muted small" style="margin:6px 0 10px">Pick what you want — every purchase is also a chip in the hat for the prize drawings.</p>`;
     list.forEach(x => {
       const have = extraPurchased(t, x.id);
-      const capped = x.max && have + bundleAmt(x) > x.max + 0.001;
+      const minehave = personPurchased(S.me?.id, x.id);
+      const capped = x.max && minehave + bundleAmt(x) > x.max + 0.001;
       html += `<div class="shop-row">
         <span class="extra-emoji">${x.emoji}</span>
-        <span class="extra-info"><b>${esc(x.name)}</b> — ${x.unit === "each" ? money(x.price) + " each" : money(x.price) + " per " + bundleAmt(x) + " " + esc(x.unit)}${x.max ? ` · max ${x.max}${x.unit === "each" ? "" : " " + esc(x.unit)} per team` : ""}${x.unit !== "each" && have ? `<br><span class="muted small">your team's ${esc(x.unit)} pool: ${extraLeft(t, x.id)} of ${have} left</span>` : ""}</span>
+        <span class="extra-info"><b>${esc(x.name)}</b> — ${x.unit === "each" ? money(x.price) + " each" : money(x.price) + " per " + bundleAmt(x) + " " + esc(x.unit)}${x.max ? ` · max ${x.max}${x.unit === "each" ? "" : " " + esc(x.unit)} per person${x.max && minehave ? ` (you: ${minehave})` : ""}` : ""}${x.unit !== "each" && have ? `<br><span class="muted small">your team's ${esc(x.unit)} pool: ${extraLeft(t, x.id)} of ${have} left</span>` : ""}</span>
         <button class="btn btn-tiny ${capped ? "btn-ghost" : "btn-gold"}" data-shopbuy="${x.id}" ${capped ? "disabled" : ""}>${capped ? "Max" : "Add"}</button>
       </div>`;
     });
@@ -1286,13 +1313,13 @@ async function shopBuy(extraId, isDraw, asFree) {
   let x, amt, price;
   if (asFree) {
     const pool = drawPool(t);                    // freebies obey caps too — auto-route to what's left
-    if (!pool.length) { toast("🔥 Deal earned — but your team is at max on every extra, so there's nothing left to give.", true); return; }
+    if (!pool.length) { toast("🔥 Deal earned — but you're at your personal max on every extra, so there's nothing left to give.", true); return; }
     x = randPick(pool);
     amt = bundleAmt(x);
     price = 0;
   } else if (isDraw) {
-    const pool = drawPool(t);                    // paid draws auto-route to whatever still has room
-    if (!pool.length) return toast("Your team is at the max on every extra.", true);
+    const pool = drawPool(t);                    // paid draws auto-route to whatever YOU still have room for
+    if (!pool.length) return toast("You're at your personal max on every extra.", true);
     x = randPick(pool);
     amt = bundleAmt(x);
     price = Number(c.drawPrice || 10);
@@ -1300,7 +1327,7 @@ async function shopBuy(extraId, isDraw, asFree) {
     x = list.find(e => e.id === extraId); if (!x) return;
     amt = bundleAmt(x);
     price = Number(x.price);   // line price = price per purchase (per bundle)
-    if (!extraHasRoom(t, x)) return toast(`Max ${x.max}${x.unit === "each" ? "" : " " + x.unit} of ${x.name} per team.`, true);
+    if (!extraHasRoom(t, x)) return toast(`Max ${x.max}${x.unit === "each" ? "" : " " + x.unit} of ${x.name} per person — your partner can still get theirs.`, true);
   }
   try {
     const newRef = await addDoc(collection(db, "extraPurchases"), {
@@ -1319,14 +1346,14 @@ async function shopBuy(extraId, isDraw, asFree) {
     } else {
       toast(`${x.emoji} ${x.name} added — chip's in the hat!`);
     }
-    // post-write safety: if a race pushed us past the cap, undo this purchase (paid or free)
+    // post-write safety: if a race pushed us past YOUR cap, undo this purchase (paid or free)
     if (x.max) {
-      const totalNow = Object.values(S.purchases).filter(p => p.teamId === t.id && p.extraId === x.id && p.id !== newRef.id)
-        .reduce((a, p) => a + Number(p.amt || 0), 0) + Number((t.extrasPurchased || {})[x.id] || 0) + amt;
+      const totalNow = Object.values(S.purchases).filter(p => p.byKey === S.me?.id && p.extraId === x.id && p.id !== newRef.id)
+        .reduce((a, p) => a + Number(p.amt || 0), 0) + amt;
       if (totalNow > x.max) {
         await deleteDoc(doc(db, "extraPurchases", newRef.id));
         S.buying = false;
-        return toast(asFree ? `Free draw landed on ${x.name} but the team just maxed it — no freebie this time.` : `Whoa — ${x.name} just hit the team max. That one didn't count.`, true);
+        return toast(asFree ? `Free draw landed on ${x.name} but you just maxed it — no freebie this time.` : `Whoa — you just hit your personal max on ${x.name}. That one didn't count.`, true);
       }
     }
     // deal: every dealBuy paid chips earns dealFree free draws
@@ -1399,7 +1426,7 @@ function extrasSaleHtml() {
   let html = `<div class="card"><div class="card-title"><span class="flag">🛒</span> Day-of extras — cash or Venmo at the tent</div><div class="extras-list">`;
   list.forEach(x => {
     html += `<div class="extra-row"><span class="extra-emoji">${x.emoji}</span>
-      <span class="extra-info"><b>${esc(x.name)}</b> — ${money(x.price)}${x.unit === "each" ? " each" : "/" + esc(x.unit)}${x.max ? ` · max ${x.max}${x.unit === "each" ? "" : " " + esc(x.unit)} per team` : ""}
+      <span class="extra-info"><b>${esc(x.name)}</b> — ${money(x.price)}${x.unit === "each" ? " each" : "/" + esc(x.unit)}${x.max ? ` · max ${x.max}${x.unit === "each" ? "" : " " + esc(x.unit)} per person${x.max && minehave ? ` (you: ${minehave})` : ""}` : ""}
       ${x.note ? `<br><span class="muted small">${esc(x.note)}</span>` : ""}</span></div>`;
   });
   return html + `</div></div>`;
@@ -1440,20 +1467,20 @@ function myScoringHtml() {
       ${cs.map(x => `<div class="contest-flag ${x.cls}">${x.emoji} ${x.name.toUpperCase()} HOLE — ${x.cls === "ld" ? "bombs away" : "stick it close"}</div>`).join("")}
       <div class="hole-nav">
         <button class="hn-btn" id="scPrev" ${curSeq <= 1 ? "disabled" : ""}>‹</button>
-        <div class="hn-label">Course hole <b>#${ph}</b> · par ${par}<br><span class="muted small">your ${curSeq}${curSeq === 1 ? "st" : curSeq === 2 ? "nd" : curSeq === 3 ? "rd" : "th"} of ${holesCount()}${existing != null ? " · editing" : ""}</span></div>
+        <div class="hn-label">Hole <b>#${courseHole18(t, curSeq)}</b> · par ${par}<br><span class="muted small">${curSeq > pars().length ? `course hole #${ph} again · ` : ""}your ${curSeq}${curSeq === 1 ? "st" : curSeq === 2 ? "nd" : curSeq === 3 ? "rd" : "th"} of ${holesCount()}${existing != null ? " · editing" : ""}</span></div>
         <button class="hn-btn" id="scNext" ${curSeq >= holesCount() ? "disabled" : ""}>›</button>
       </div>
       <div class="entry-cols">
         ${HOLE_INFO[ph] ? `<button class="entry-img" data-holezoom="${ph}"><img src="${holeImgSrc(ph)}" alt="hole ${ph}" loading="lazy"><span>tap to zoom</span></button>` : "<span></span>"}
         <div class="entry-right">
-          <div class="score-label">⛳ YOUR SCORE — HOLE #${ph}</div>
+          <div class="score-label">⛳ YOUR SCORE — HOLE #${courseHole18(t, curSeq)}</div>
           <div class="stepper">
             <button class="step-btn" id="scMinus">−</button>
             <span class="step-wrap"><span class="step-val" id="scVal" data-val="${existing ?? par}" data-par="${par}">${existing ?? par}</span><span class="step-rel" id="scRel">(${relFmt((existing ?? par) - par)})</span></span>
             <button class="step-btn" id="scPlus">+</button>
           </div>
           ${extraControlsHtml(t, curSeq, "sc")}
-          <button class="btn btn-primary btn-block" id="scSave">${existing != null ? "Update" : "Save"} hole #${ph}</button>
+          <button class="btn btn-primary btn-block" id="scSave">${existing != null ? "Update" : "Save"} hole #${courseHole18(t, curSeq)}</button>
         </div>
       </div>
     </div>`;
@@ -1469,8 +1496,8 @@ function myScoringHtml() {
     const cls = v == null ? "" : v < par ? "sg-under" : v > par ? "sg-over" : "sg-even";
     const marks = extraUsesAt(t, q).map(u => (extrasList().find(x => x.id === u.id) || {}).emoji || "⭐").join("");
     const cMark = contests().filter(x => x.hole === ph).map(x => x.emoji).join("");
-    html += `<button class="sg-cell ${cls} ${cMark ? "sg-contest" : ""} ${q === curSeq ? "sg-cur" : ""}" data-selscore="${q}" title="course hole #${ph}, par ${par}${cMark ? " — contest hole" : ""}">
-      <span class="sg-hole">${q}</span>
+    html += `<button class="sg-cell ${cls} ${cMark ? "sg-contest" : ""} ${q === curSeq ? "sg-cur" : ""}" data-selscore="${q}" title="your ${q}th hole · physical hole #${ph}, par ${par}${cMark ? " — contest hole" : ""}">
+      <span class="sg-hole">#${courseHole18(t, q)}</span>
       <span class="sg-val">${v ?? "·"}</span>${v != null ? `<span class="sg-relx">${relFmt(v - par)}</span>` : ""}${marks ? `<span class="sg-mull">${marks}</span>` : ""}${cMark ? `<span class="sg-cmark">${cMark}</span>` : ""}
     </button>`;
   }
@@ -1670,7 +1697,7 @@ async function saveHole(t, seq, strokes, uses, isEdit) {
     }).join(", ");
     audit(isEdit ? "score_edited" : "score_entered",
       `T${t.number} hole ${seq} (course #${ph}): ${strokes} (par ${par})${useTxt ? " — " + useTxt : ""} — by ${S.me?.name || "?"}`);
-    toast(`Hole #${ph} saved: ${strokes} (${relFmt(strokes - par)}).`);
+    toast(`Hole #${courseHole18(t, seq)} saved: ${strokes} (${relFmt(strokes - par)}).`);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1797,6 +1824,7 @@ function adminPairingHtml() {
       html += `<div class="suggest"><b>${(r.players || []).map(p => esc(p.name)).join(" & ")}</b> <span class="muted small">(team reg · ${esc(r.ownerEmail || "")})</span>
         <div class="add-row" style="margin-top:6px">
           <button class="btn btn-sm btn-gold" style="flex:2" data-reform="${r.id}">Re-form · Team ${nextTeamPreview()}</button>
+          <button class="btn btn-sm btn-ghost" style="flex:2" data-duosplit="${r.id}">Split to 2 solos</button>
           <button class="btn btn-sm btn-ghost" data-regedit="${r.id}">✎</button>
           <button class="btn btn-sm btn-ghost" data-regdel="${r.id}">🗑</button>
         </div></div>`;
@@ -1847,6 +1875,25 @@ async function reformTeamReg(regId) {
   });
   audit("team_reformed", `${(r.players || []).map(p => p.name).join(" & ")} re-formed by ${S.adminEmail}`);
   toast("Team re-formed.");
+}
+
+async function splitDuoToSolos(regId) {
+  const r = S.regs[regId];
+  if (!r || r.type !== "team" || r.teamId) return;
+  const half = Number(r.price || 0) / 2;
+  try {
+    for (const p of (r.players || [])) {
+      await addDoc(collection(db, "registrations"), {
+        type: "individual", ownerKey: r.ownerKey, ownerName: r.ownerName, ownerEmail: r.ownerEmail,
+        players: [{ ...p }], preference: "random", partnerName: "",
+        teamId: null, price: half, uid: null,
+        createdAt: r.createdAt || nowIso(), updatedAt: nowIso(), splitFrom: regId
+      });
+    }
+    await deleteDoc(doc(db, "registrations", regId));
+    audit("duo_split_to_solos", `${(r.players || []).map(p => p.name).join(" & ")} → 2 individual regs (${money(half)} each) by ${S.adminEmail}`);
+    toast("Split — both players are in the individual pairing pool now.");
+  } catch (e) { toast(e.message, true); }
 }
 
 function openRegDelete(regId) {
@@ -2039,11 +2086,14 @@ function adminHolesHtml() {
   let html = `<div class="card admin-section"><div class="card-title"><span class="flag">🕳️</span> Hole assignments</div>`;
   if (!teams.length) { html += `<p class="muted">Assign holes once teams are set — usually the day before.</p></div>`; return html; }
   const hOn = !!S.config.handicapOn;
-  html += `<div class="table-scroll"><table class="admin-table"><tr><th>Team</th><th>Players &amp; HCP</th><th>Hole</th>${hOn ? "<th>Adj</th>" : ""}<th></th></tr>`;
+  const totalP = teams.reduce((a, t) => a + (t.players || []).length, 0);
+  const inP = teams.reduce((a, t) => a + (t.players || []).filter(p => p.checkedIn).length, 0);
+  html += `<p class="small" style="margin:0 0 8px"><span class="chip ${inP === totalP && totalP ? "chip-mull" : ""}">✔ Checked in: <b>${inP} / ${totalP}</b></span> <span class="muted small">tick each player as they sign in at the table</span></p>
+  <div class="table-scroll"><table class="admin-table"><tr><th>Team</th><th>Players &amp; HCP</th><th>Hole</th>${hOn ? "<th>Adj</th>" : ""}<th></th></tr>`;
   teams.forEach(t => {
     html += `<tr>
       <td><b>${t.number}</b></td>
-      <td class="small">${(t.players || []).map((p, i) => `<span class="hcp-line">${esc(p.name)} <input class="field field-mini hcp-in" inputmode="decimal" data-hcpedit="${t.id}|${i}" value="${p.handicap ?? ""}" placeholder="${DEFAULT_HANDICAP}"></span>`).join("")}</td>
+      <td class="small">${(t.players || []).map((p, i) => `<span class="hcp-line"><input type="checkbox" class="chk-in" data-checkin="${t.id}|${i}" ${p.checkedIn ? "checked" : ""} title="checked in at registration">${esc(p.name)} <input class="field field-mini hcp-in" inputmode="decimal" data-hcpedit="${t.id}|${i}" value="${p.handicap ?? ""}" placeholder="${DEFAULT_HANDICAP}"></span>`).join("")}</td>
       <td><select class="hole-select" data-hole="${t.id}">${holeOptions(t.hole || "")}</select></td>
       ${hOn ? `<td><b>−${teamHcp(t)}</b></td>` : ""}
       <td><button class="btn btn-tiny btn-ghost" data-split="${t.id}" title="Dissolve this team — registrations go back to the queue">Un-pair</button></td>
@@ -2097,7 +2147,7 @@ function adminScoringHtml() {
   if (!teams.length) return html + `<p class="muted" style="margin-top:8px">Teams will appear here once they're set.</p></div>`;
   const anyExtras = extrasList().length > 0;
   html += `<div class="table-scroll" style="margin-top:10px"><table class="admin-table">
-    <tr><th>Team</th><th>Thru</th><th>Score</th>${anyExtras ? "<th>Extras</th>" : ""}<th>Flags</th><th></th></tr>`;
+    <tr><th>Team</th><th>Thru</th><th>Gross</th>${c.handicapOn ? "<th>Net</th>" : ""}${anyExtras ? "<th>Extras</th>" : ""}<th>Flags</th><th></th></tr>`;
   teams.forEach(t => {
     const s = teamScore(t);
     const behind = c.scoringOpen && med - s.played >= thr && s.played < holesCount();
@@ -2106,12 +2156,13 @@ function adminScoringHtml() {
       <td><b>T${t.number}</b> ${t.customName ? `<span class="small">${esc(t.customName)}</span>` : ""}<br><span class="muted small">${(t.players||[]).map(p=>esc(p.name)).join(" & ")}</span></td>
       <td>${s.played}/${holesCount()}</td>
       <td>${s.played ? relFmt(s.rel) : "—"}${s.pen ? ` <span class="chip-pen small">(+${s.pen})</span>` : ""}</td>
+      ${c.handicapOn ? `<td><b>${s.played ? relFmt(s.rel - teamHcp(t)) : "—"}</b> <span class="muted small">−${teamHcp(t)}</span></td>` : ""}
       ${anyExtras ? `<td class="small">${extrasList().map(x => extraPurchased(t, x.id) ? `${x.emoji}${extraUsed(t, x.id)}/${extraPurchased(t, x.id)}` : "").filter(Boolean).join(" ") || "—"}<br><button class="btn btn-tiny btn-ghost" data-extras="${t.id}">Set</button></td>` : ""}
       <td class="small">${behind ? `<span class="chip chip-behind">⏳ ${med - s.played} behind</span>` : ""} ${bulk ? `<span class="chip chip-pen" title="4+ holes entered within 3 minutes">📦 bulk entry</span>` : ""}</td>
       <td><button class="btn btn-tiny btn-ghost" data-penalty="${t.id}">Penalty</button><br><button class="btn btn-tiny btn-ghost" data-editteam="${t.id}" style="margin-top:4px">Scores</button></td>
     </tr>`;
     (t.penalties || []).forEach((p, i) => {
-      html += `<tr class="pen-row"><td colspan="${anyExtras ? 5 : 4}" class="small">⚠ +${Number(p.strokes)} — ${esc(p.note || "")} <span class="muted">(${esc(p.by || "")}, ${esc((p.ts || "").slice(5, 16).replace("T", " "))})</span></td>
+      html += `<tr class="pen-row"><td colspan="${(anyExtras ? 5 : 4) + (c.handicapOn ? 1 : 0)}" class="small">⚠ +${Number(p.strokes)} — ${esc(p.note || "")} <span class="muted">(${esc(p.by || "")}, ${esc((p.ts || "").slice(5, 16).replace("T", " "))})</span></td>
         <td><button class="btn btn-tiny btn-ghost" data-unpen="${t.id}|${i}">Remove</button></td></tr>`;
     });
   });
@@ -2219,13 +2270,10 @@ async function exportWorkbook() {
     ["Extras chips sold", Object.values(S.purchases).length],
     ["Prize drawings held", Object.values(S.draws).length],
     [],
-    ...(c.roundFinal ? (() => {
-      const g = champion(false), nt = c.handicapOn ? champion(true) : null;
-      return [
-        ["🥇 GROSS champion", g ? `T${g.t.number} ${g.t.customName || ""}` : "—", g ? relFmt(g.s.rel) : ""],
-        ...(nt ? [["🥇 NET champion", `T${nt.t.number} ${nt.t.customName || ""}`, relFmt(nt.net) + " net"]] : [])
-      ];
-    })() : []),
+    ...(c.roundFinal ? [
+      ...placers(false, c.placesGross).map((x, i) => [`${MEDALS[i]} GROSS place ${i + 1}`, `T${x.t.number} ${x.t.customName || ""}`, relFmt(x.s.rel)]),
+      ...(c.handicapOn ? placers(true, c.placesNet).map((x, i) => [`${MEDALS[i]} NET place ${i + 1}`, `T${x.t.number} ${x.t.customName || ""}`, relFmt(x.net) + " net"]) : [])
+    ] : []),
     ["💪 Longest drive winner", c.contestLDWinner || "—", c.contestLD ? "hole #" + c.contestLD : ""],
     ["🎯 Closest to the pin winner", c.contestCPWinner || "—", c.contestCP ? "hole #" + c.contestCP : ""]
   ]);
@@ -2305,7 +2353,8 @@ function adminExtrasPaymentsHtml() {
   const unpaidTotal = all.filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0);
   let html = `<div class="card admin-section"><div class="card-title"><span class="flag">💸</span> Extras payments
     <span class="badge ${unpaidTotal ? "badge-gold" : ""}">${unpaidTotal ? money(unpaidTotal) + " unpaid" : "all paid ✓"}</span></div>
-    <p class="muted small">Cash or Venmo — either way, mark it paid here so the team sees PAID ✓.</p>`;
+    <p class="muted small">Cash or Venmo — either way, mark it paid here so the team sees PAID ✓.</p>
+    <button class="btn btn-ghost btn-block" id="resetExtrasBtn" style="margin-bottom:8px">🧨 Reset ALL extras (${all.length} chips) — fresh start</button>`;
   Object.values(byTeam).sort((a, b) => (a[0].teamNumber || 0) - (b[0].teamNumber || 0)).forEach(list => {
     const t0 = list[0];
     const due = list.filter(p => !p.paid && !p.free).reduce((a, p) => a + Number(p.price || 0), 0);
@@ -2337,6 +2386,12 @@ function adminContestWinnersHtml() {
     <p class="muted small" style="margin-top:6px">Shows on everyone's Live tab — and the winner gets a gold WINNER banner on their own phone.</p>
     <hr style="border-color:var(--line);margin:12px 0">
     <b>🏁 Close &amp; finalize</b>
+    <div class="add-row" style="margin:8px 0">
+      <div style="flex:1"><label class="field-label">GROSS places awarded</label>
+        <select class="field" id="setPlacesG">${[1,2,3].map(n => `<option value="${n}" ${Number(c.placesGross || 1) === n ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+      <div style="flex:1"><label class="field-label">NET places awarded</label>
+        <select class="field" id="setPlacesN">${[1,2,3].map(n => `<option value="${n}" ${Number(c.placesNet || 1) === n ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+    </div>
     <p class="muted small" style="margin:4px 0 8px">1) Close the round to lock player entry while you verify (fix scores with each team's <b>Scores</b> button in Live scoring). 2) Finalize to post winners on every phone.</p>
     ${!c.roundClosed && !c.roundFinal ? `<button class="btn btn-primary btn-block" id="closeRoundBtn">⏸ Close round — lock score entry</button>` : ""}
     ${c.roundClosed && !c.roundFinal ? `<div class="add-row">
@@ -2369,7 +2424,7 @@ function openTeamScores(teamId) {
       ${Array.from({ length: holesCount() }, (_, i) => {
         const q = i + 1, ph = physHole(t, q), par = parFor(t, q);
         const v = (t.scores || {})[q];
-        return `<label class="ts-cell"><span>${q} <i>#${ph} p${par}</i></span><input class="field field-mini" inputmode="numeric" data-tscore="${q}" value="${v ?? ""}"></label>`;
+        return `<label class="ts-cell"><span>#${courseHole18(t, q)} <i>(${ph}) p${par}</i></span><input class="field field-mini" inputmode="numeric" data-tscore="${q}" value="${v ?? ""}"></label>`;
       }).join("")}
     </div>
     <div class="modal-actions">
@@ -2570,7 +2625,7 @@ function adminSettingsHtml() {
       <div><label class="field-label">…get M free draws</label><input class="field" id="setDealFree" inputmode="numeric" value="${c.dealFree || 0}"></div>
       <div><label class="field-label">Wheel spin seconds</label><input class="field" id="setSpin" inputmode="numeric" value="${c.spinSeconds ?? 10}"></div>
     </div>
-    <label class="field-label">Day-of extras — one per line: emoji | name | price | unit | max per team | note<br><span class="muted small" style="font-weight:400">unit "each" = countable (mulligans, drops); "ft" etc = amount used per go (putt string). Delete a line to turn it off; empty box turns extras off.</span></label>
+    <label class="field-label">Day-of extras — one per line: emoji | name | price | unit | max per PERSON | note<br><span class="muted small" style="font-weight:400">unit "each" = countable (mulligans, drops); "ft" etc = amount used per go (putt string). Delete a line to turn it off; empty box turns extras off.</span></label>
     <textarea class="field" id="setExtras" rows="3" placeholder="empty = no extras">${esc(c.extrasLines || "")}</textarea>
     <div class="samples-box">
       <p class="small" style="font-weight:700;margin:0 0 6px">Sample ideas — tap ＋ to add:</p>
@@ -2808,6 +2863,16 @@ function wireAdmin() {
       toast(sel.value ? `Team ${t?.number} → Hole ${sel.value}` : "Hole cleared.");
     } catch (e) { toast(e.message, true); }
   }));
+  document.querySelectorAll("[data-checkin]").forEach(cb => cb.addEventListener("change", async () => {
+    const [tid, idx] = cb.dataset.checkin.split("|");
+    const t = S.teams[tid]; if (!t) return;
+    const players = (t.players || []).map(p => ({ ...p }));
+    players[Number(idx)].checkedIn = cb.checked;
+    try {
+      await updateDoc(doc(db, "teams", tid), { players });
+      audit(cb.checked ? "player_checked_in" : "player_check_in_undone", `${players[Number(idx)].name} by ${S.adminEmail}`);
+    } catch (e) { toast(e.message, true); }
+  }));
   document.querySelectorAll("[data-hcpedit]").forEach(inp => inp.addEventListener("change", async () => {
     const [tid, idx] = inp.dataset.hcpedit.split("|");
     const t = S.teams[tid]; if (!t) return;
@@ -2822,6 +2887,15 @@ function wireAdmin() {
   }));
   $("adminAddReg")?.addEventListener("click", openAdminAddReg);
   document.querySelectorAll("[data-reform]").forEach(b => b.addEventListener("click", () => reformTeamReg(b.dataset.reform).catch(e => toast(e.message, true))));
+  document.querySelectorAll("[data-duosplit]").forEach(b => b.addEventListener("click", () => {
+    const r = S.regs[b.dataset.duosplit]; if (!r) return;
+    openModal(`<div class="modal-title">Split into two individuals?</div>
+      <p class="small"><b>${(r.players || []).map(p => esc(p.name)).join(" &amp; ")}</b> become two separate players in the pairing pool (${money(Number(r.price || 0) / 2)} each — total unchanged). Auto-assign can then pair them with anyone.</p>
+      <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-gold" id="mGo">Split them</button></div>`);
+    $("mCancel").addEventListener("click", closeModal);
+    $("mGo").addEventListener("click", () => { closeModal(); splitDuoToSolos(b.dataset.duosplit); });
+  }));
   document.querySelectorAll("[data-regdel]").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); openRegDelete(b.dataset.regdel); }));
   document.querySelectorAll("[data-regedit]").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); openRegEdit(b.dataset.regedit); }));
   document.querySelectorAll("[data-split]").forEach(b => b.addEventListener("click", async () => {
@@ -2855,6 +2929,27 @@ function wireAdmin() {
       toast(to === "1" ? "Marked paid ✓" : "Marked unpaid.");
     } catch (e) { toast(e.message, true); }
   }));
+  $("resetExtrasBtn")?.addEventListener("click", () => {
+    const nP = Object.values(S.purchases).length, nD = Object.values(S.draws).length;
+    openModal(`<div class="modal-title">🧨 Reset ALL extras?</div>
+      <p class="small">Deletes <b>${nP} purchase chip${nP === 1 ? "" : "s"}</b> and <b>${nD} prize drawing${nD === 1 ? "" : "s"}</b> — every team back to zero, hat empty, next draw = Prize 1.</p>
+      <p class="muted small">Use this to clear test data before the real thing. Cannot be undone.</p>
+      <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-danger" id="mGo">Wipe it all</button></div>`);
+    $("mCancel").addEventListener("click", closeModal);
+    $("mGo").addEventListener("click", async () => {
+      try {
+        const batch = writeBatch(db);
+        Object.values(S.purchases).forEach(p => batch.delete(doc(db, "extraPurchases", p.id)));
+        Object.values(S.draws).forEach(d => batch.delete(doc(db, "draws", d.id)));
+        await batch.commit();
+        S.shownDraws = {};
+        audit("extras_full_reset", `${nP} chips + ${nD} draws wiped by ${S.adminEmail}`);
+        toast("Clean slate — zero chips, zero drawings.");
+        closeModal();
+      } catch (e) { toast(e.message, true); }
+    });
+  });
   document.querySelectorAll("[data-xdel]").forEach(b => b.addEventListener("click", () => {
     const p = S.purchases[b.dataset.xdel]; if (!p) return;
     openModal(`<div class="modal-title">Delete this purchase?</div>
@@ -2957,6 +3052,13 @@ function wireAdmin() {
   }));
   document.querySelectorAll("[data-penalty]").forEach(b => b.addEventListener("click", () => openPenalty(b.dataset.penalty)));
   document.querySelectorAll("[data-editteam]").forEach(b => b.addEventListener("click", () => openTeamScores(b.dataset.editteam)));
+  ["setPlacesG", "setPlacesN"].forEach(id => $(id)?.addEventListener("change", async () => {
+    try { await updateDoc(doc(db, "config", "current"), {
+        placesGross: parseInt($("setPlacesG").value) || 1,
+        placesNet: parseInt($("setPlacesN").value) || 1, updatedAt: nowIso() });
+      toast("Podium places saved.");
+    } catch (e) { toast(e.message, true); }
+  }));
   $("closeRoundBtn")?.addEventListener("click", async () => {
     try { await updateDoc(doc(db, "config", "current"), { roundClosed: true, updatedAt: nowIso() });
       audit("round_closed", "by " + S.adminEmail); toast("⏸ Round closed — player entry locked.");
@@ -2968,10 +3070,10 @@ function wireAdmin() {
     } catch (e) { toast(e.message, true); }
   });
   $("finalizeBtn")?.addEventListener("click", () => {
-    const g = champion(false), nt = S.config.handicapOn ? champion(true) : null;
+    const gp = placers(false, S.config.placesGross), np = S.config.handicapOn ? placers(true, S.config.placesNet) : [];
     openModal(`<div class="modal-title">🏁 Finalize &amp; post winners?</div>
-      <p class="small">${g ? `🥇 GROSS: <b>T${g.t.number}</b> ${esc(g.t.customName || "")} (${relFmt(g.s.rel)})` : "No completed scores yet!"}
-      ${nt ? `<br>🥇 NET: <b>T${nt.t.number}</b> ${esc(nt.t.customName || "")} (${relFmt(nt.net)} net)` : ""}</p>
+      <p class="small">${gp.length ? gp.map((x, i) => `${MEDALS[i]} GROSS: <b>T${x.t.number}</b> ${esc(x.t.customName || "")} (${relFmt(x.s.rel)})`).join("<br>") : "No completed scores yet!"}
+      ${np.map((x, i) => `<br>${MEDALS[i]} NET: <b>T${x.t.number}</b> ${esc(x.t.customName || "")} (${relFmt(x.net)} net)`).join("")}</p>
       <p class="muted small">This locks it in and flashes congratulations on every phone. You can un-finalize if needed.</p>
       <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
       <button class="btn btn-gold" id="mGo">Post winners 🏁</button></div>`);

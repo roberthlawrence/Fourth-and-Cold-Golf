@@ -390,3 +390,8 @@ main{padding:8px 14px}
 
 /* pairing tools */
 .pair-tools{ display:flex; gap:4px; margin-left:auto; }
+
+/* per-person shop, checkin, dual-score leaderboard */
+.chk-in{ width:17px; height:17px; accent-color:var(--gold); margin-right:2px; }
+.lb-gross{ opacity:.75; font-size:.95em; margin-right:8px; }
+.lb-score i{ font-style:normal; font-size:.58rem; font-weight:800; color:#A39A8E; margin-right:2px; vertical-align:super; }
