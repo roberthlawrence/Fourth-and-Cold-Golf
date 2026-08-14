@@ -1778,6 +1778,7 @@ function renderAdmin() {
   if (!S.isFin) { el.innerHTML = `<div class="card"><p class="muted">Sign in with an admin Google account to use this tab.</p></div>`; return; }
   let html = "";
   html += adminPairingHtml();
+  html += adminHoleMapHtml();
   html += adminHolesHtml();
   html += adminScoringHtml();
   html += adminExtrasPaymentsHtml();
@@ -2081,6 +2082,72 @@ function holeOptions(current) {
   }
   return opts;
 }
+function slotTeams(slot) { return Object.values(S.teams).filter(t => (t.hole || "") === slot); }
+
+function adminHoleMapHtml() {
+  const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
+  if (!teams.length) return "";
+  const unassigned = teams.filter(t => !t.hole);
+  const dupes = [];
+  let rows = "";
+  for (let h = 1; h <= pars().length; h++) {
+    let cells = "";
+    for (const s of ["A", "B"]) {
+      const slot = `${h}${s}`;
+      const st = slotTeams(slot);
+      if (st.length > 1) dupes.push(slot);
+      cells += `<button class="slot ${st.length ? (st.length > 1 ? "slot-dupe" : "slot-full") : "slot-open"}" data-slotpick="${slot}">
+        <span class="slot-tag">${slot}</span>
+        ${st.length ? st.map(t => `<span class="slot-team"><b>T${t.number}</b> ${(t.players || []).map(p => esc(p.name.split(" ")[0])).join(" & ")}</span>`).join("") : `<span class="slot-empty">open</span>`}
+      </button>`;
+    }
+    rows += `<div class="slot-row"><span class="slot-hole">${h}</span>${cells}</div>`;
+  }
+  return `<div class="card admin-section"><div class="card-title"><span class="flag">🗺</span> Shotgun map — who's on what hole</div>
+    ${dupes.length ? `<p class="small" style="color:#FF7B76;font-weight:800">⚠ Double-booked: ${dupes.join(", ")} — tap the slot to fix.</p>` : ""}
+    <p class="small" style="margin:0 0 8px"><span class="chip ${unassigned.length ? "chip-pen" : "chip-mull"}">${unassigned.length ? `${unassigned.length} team${unassigned.length === 1 ? "" : "s"} without a hole` : "Every team has a hole ✓"}</span></p>
+    <div class="slot-map">${rows}</div>
+    <div class="add-row" style="margin-top:10px">
+      <button class="btn btn-sm btn-gold" id="autoHolesBtn" style="flex:2">⚡ Auto-fill empty slots (T# order)</button>
+      <button class="btn btn-sm btn-ghost" id="clearHolesBtn" style="flex:1">Clear all</button>
+    </div>
+    <p class="muted small" style="margin-top:6px">Tap any slot to assign, swap, or clear. A &amp; B tee off together on that hole.</p>
+  </div>`;
+}
+
+function openSlotPick(slot) {
+  const cur = slotTeams(slot);
+  const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
+  openModal(`<div class="modal-title">Hole ${slot}</div>
+    ${cur.length ? `<p class="small">Now: ${cur.map(t => `<b>T${t.number}</b> ${(t.players || []).map(p => esc(p.name)).join(" & ")}`).join(" · ")}</p>` : `<p class="muted small">This slot is open.</p>`}
+    <label class="field-label">Put a team here</label>
+    <div class="slot-list">
+      ${teams.map(t => `<button class="btn btn-sm ${t.hole === slot ? "btn-gold" : "btn-ghost"} btn-block" data-slotset="${t.id}|${slot}" style="margin-top:4px;text-align:left">
+        T${t.number} — ${(t.players || []).map(p => esc(p.name)).join(" & ")} ${t.hole && t.hole !== slot ? `<span class="muted small">(now on ${esc(t.hole)})</span>` : t.hole === slot ? "· here ✓" : `<span class="muted small">(no hole)</span>`}
+      </button>`).join("")}
+    </div>
+    <div class="modal-actions">
+      ${cur.length ? `<button class="btn btn-ghost" id="slotClear">Clear slot</button>` : ""}
+      <button class="btn btn-ghost" id="mCancel">Close</button>
+    </div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  $("slotClear")?.addEventListener("click", async () => {
+    try {
+      for (const t of cur) await updateDoc(doc(db, "teams", t.id), { hole: "" });
+      audit("hole_cleared", `${slot} by ${S.adminEmail}`); toast(`${slot} cleared.`); closeModal();
+    } catch (e) { toast(e.message, true); }
+  });
+  document.querySelectorAll("[data-slotset]").forEach(b => b.addEventListener("click", async () => {
+    const [tid, sl] = b.dataset.slotset.split("|");
+    try {
+      for (const t of slotTeams(sl)) if (t.id !== tid) await updateDoc(doc(db, "teams", t.id), { hole: "" });
+      await updateDoc(doc(db, "teams", tid), { hole: sl });
+      audit("hole_assigned", `T${S.teams[tid]?.number} → ${sl} by ${S.adminEmail}`);
+      toast(`T${S.teams[tid]?.number} → hole ${sl}.`); closeModal();
+    } catch (e) { toast(e.message, true); }
+  }));
+}
+
 function adminHolesHtml() {
   const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
   let html = `<div class="card admin-section"><div class="card-title"><span class="flag">🕳️</span> Hole assignments</div>`;
@@ -2863,6 +2930,39 @@ function wireAdmin() {
       toast(sel.value ? `Team ${t?.number} → Hole ${sel.value}` : "Hole cleared.");
     } catch (e) { toast(e.message, true); }
   }));
+  document.querySelectorAll("[data-slotpick]").forEach(b => b.addEventListener("click", () => openSlotPick(b.dataset.slotpick)));
+  $("autoHolesBtn")?.addEventListener("click", async () => {
+    const empty = [];
+    for (let h = 1; h <= pars().length; h++) for (const s of ["A", "B"]) {
+      const slot = `${h}${s}`;
+      if (!slotTeams(slot).length) empty.push(slot);
+    }
+    const un = Object.values(S.teams).filter(t => !t.hole).sort((a, b) => a.number - b.number);
+    if (!un.length) return toast("Every team already has a hole.");
+    if (!empty.length) return toast("No open slots left.", true);
+    try {
+      const batch = writeBatch(db);
+      un.slice(0, empty.length).forEach((t, i) => batch.update(doc(db, "teams", t.id), { hole: empty[i] }));
+      await batch.commit();
+      audit("holes_autofilled", `${Math.min(un.length, empty.length)} teams placed by ${S.adminEmail}`);
+      toast(`⚡ ${Math.min(un.length, empty.length)} team${Math.min(un.length, empty.length) === 1 ? "" : "s"} placed.`);
+    } catch (e) { toast(e.message, true); }
+  });
+  $("clearHolesBtn")?.addEventListener("click", () => {
+    openModal(`<div class="modal-title">Clear every hole assignment?</div>
+      <p class="muted small">All teams go back to unassigned. Scores aren't touched.</p>
+      <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-danger" id="mGo">Clear all</button></div>`);
+    $("mCancel").addEventListener("click", closeModal);
+    $("mGo").addEventListener("click", async () => {
+      try {
+        const batch = writeBatch(db);
+        Object.values(S.teams).filter(t => t.hole).forEach(t => batch.update(doc(db, "teams", t.id), { hole: "" }));
+        await batch.commit();
+        audit("holes_cleared_all", "by " + S.adminEmail); toast("All hole assignments cleared."); closeModal();
+      } catch (e) { toast(e.message, true); }
+    });
+  });
   document.querySelectorAll("[data-checkin]").forEach(cb => cb.addEventListener("change", async () => {
     const [tid, idx] = cb.dataset.checkin.split("|");
     const t = S.teams[tid]; if (!t) return;

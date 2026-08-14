@@ -395,3 +395,16 @@ main{padding:8px 14px}
 .chk-in{ width:17px; height:17px; accent-color:var(--gold); margin-right:2px; }
 .lb-gross{ opacity:.75; font-size:.95em; margin-right:8px; }
 .lb-score i{ font-style:normal; font-size:.58rem; font-weight:800; color:#A39A8E; margin-right:2px; vertical-align:super; }
+
+/* shotgun map */
+.slot-map{ display:flex; flex-direction:column; gap:6px; }
+.slot-row{ display:grid; grid-template-columns:26px 1fr 1fr; gap:6px; align-items:stretch; }
+.slot-hole{ font-family:"Big Shoulders Display",sans-serif; font-weight:800; font-size:1.15rem; color:var(--gold); align-self:center; text-align:center; }
+.slot{ border-radius:10px; padding:7px 9px; text-align:left; cursor:pointer; font-family:inherit; display:flex; flex-direction:column; gap:2px; border:1px solid var(--line); }
+.slot-open{ background:var(--smoke-3); border-style:dashed; }
+.slot-full{ background:#26331F; border-color:#4A6B3A; }
+.slot-dupe{ background:#3A1A18; border-color:#B0413E; }
+.slot-tag{ font-size:.62rem; font-weight:800; color:#A39A8E; letter-spacing:.06em; }
+.slot-team{ font-size:.78rem; color:var(--white); }
+.slot-empty{ font-size:.75rem; color:#8C8378; font-style:italic; }
+.slot-list{ max-height:45vh; overflow-y:auto; }
