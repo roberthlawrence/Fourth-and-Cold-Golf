@@ -2215,6 +2215,7 @@ function adminScoringHtml() {
         <button class="btn btn-gold" id="drawPrizeBtn" style="flex:1">🎡 Draw for prize ${Object.values(S.draws).reduce((m, d) => Math.max(m, Number(d.prizeNumber || 0)), 0) + 1}</button>
         <button class="btn btn-ghost" id="testWheelBtn">🧪 Test wheel</button>
       </div>
+      <button class="btn btn-primary btn-block" id="fillHatBtn" style="margin-top:8px">🎩 Fill hat — 1 chip per player, no buying needed</button>
       <p class="muted small" style="margin-top:6px">Everyone's phone gets the ${Number(c.spinSeconds || 10)}-second wheel. Drawn chips leave the hat. Test wheel is local — only you see it, nothing is saved.</p>
       ${(() => {
         const ds = Object.values(S.draws).sort((a, b) => (a.prizeNumber || 0) - (b.prizeNumber || 0));
@@ -3065,6 +3066,34 @@ function wireAdmin() {
       <button class="btn btn-gold" id="mGo">Spin it</button></div>`);
     $("mCancel").addEventListener("click", closeModal);
     $("mGo").addEventListener("click", () => { closeModal(); adminDrawPrize(); });
+  });
+  $("fillHatBtn")?.addEventListener("click", () => {
+    const teams = Object.values(S.teams);
+    const existing = new Set(Object.values(S.purchases).filter(p => p.extraId === "raffle_entry").map(p => p.teamId + "|" + (p.byName || "").toLowerCase()));
+    const toAdd = [];
+    teams.forEach(t => (t.players || []).forEach(p => {
+      if (!existing.has(t.id + "|" + (p.name || "").toLowerCase())) toAdd.push({ t, p });
+    }));
+    openModal(`<div class="modal-title">🎩 Fill the hat?</div>
+      <p class="small">Adds <b>1 raffle chip for each of ${toAdd.length} player${toAdd.length === 1 ? "" : "s"}</b> (anyone already in stays in — no doubles). Free, nothing owed, extras tallies untouched. Drawn chips leave the hat — no redos.</p>
+      <div class="modal-actions"><button class="btn btn-ghost" id="mCancel">Cancel</button>
+      <button class="btn btn-gold" id="mGo">Fill it</button></div>`);
+    $("mCancel").addEventListener("click", closeModal);
+    $("mGo").addEventListener("click", async () => {
+      try {
+        const batch = writeBatch(db);
+        toAdd.forEach(({ t, p }) => batch.set(doc(collection(db, "extraPurchases")), {
+          teamId: t.id, teamNumber: t.number, teamName: t.customName || (t.players || []).map(x => x.name).join(" & "),
+          uid: null, byKey: null, byName: p.name,
+          extraId: "raffle_entry", extraName: "Raffle entry", emoji: "🎟", amt: 0, price: 0,
+          free: false, paid: true, drawnPrize: null, ts: nowIso()
+        }));
+        await batch.commit();
+        audit("hat_filled", `${toAdd.length} raffle chips (1/player) by ${S.adminEmail}`);
+        toast(`🎩 ${toAdd.length} chips in — everyone's in the hat once.`);
+        closeModal();
+      } catch (e) { toast(e.message, true); }
+    });
   });
   $("testWheelBtn")?.addEventListener("click", testWheel);
   $("exportXlsxBtn")?.addEventListener("click", exportWorkbook);
