@@ -2321,6 +2321,17 @@ function openExtrasModal(teamId) {
 // ---------------------------------------------------------------------
 // EVENT WORKBOOK (.xlsx) — full record of the event
 // ---------------------------------------------------------------------
+function fmtTs(v) {
+  try {
+    if (!v) return "";
+    if (typeof v === "string") return v.slice(0, 16).replace("T", " ");
+    if (typeof v.toDate === "function") return v.toDate().toISOString().slice(0, 16).replace("T", " ");
+    if (v instanceof Date) return v.toISOString().slice(0, 16).replace("T", " ");
+    if (typeof v.seconds === "number") return new Date(v.seconds * 1000).toISOString().slice(0, 16).replace("T", " ");
+  } catch {}
+  return "";
+}
+
 async function loadXLSX() {
   if (window.XLSX) return window.XLSX;
   await new Promise((res, rej) => {
@@ -2388,7 +2399,7 @@ async function exportWorkbook() {
       r.ownerEmail || "", Number(r.price || 0),
       r.teamId && S.teams[r.teamId] ? S.teams[r.teamId].number : "",
       r.type === "individual" ? (r.preference === "partner" ? "Partner: " + (r.partnerName || "") : "Random") : "",
-      (r.createdAt || "").slice(0, 16).replace("T", " ")
+      fmtTs(r.createdAt)
     ])
   ]);
 
@@ -2396,7 +2407,7 @@ async function exportWorkbook() {
   sheet("Payments", [
     ["When", "Account", "Amount", "Collector", "Note"],
     ...Object.values(S.payments).sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || ""))).map(p => [
-      (p.ts || "").slice(0, 16).replace("T", " "), p.accountName || p.accountKey || "", Number(p.amount || 0), p.by || "", p.note || ""
+      fmtTs(p.ts), p.accountName || p.accountKey || "", Number(p.amount || 0), p.by || "", p.note || ""
     ])
   ]);
 
@@ -2404,7 +2415,7 @@ async function exportWorkbook() {
   sheet("Extras", [
     ["When", "Team #", "Team", "Bought by", "Extra", "Amt", "Price", "Free", "Paid", "Won prize #"],
     ...Object.values(S.purchases).sort((a, b) => String(a.ts).localeCompare(String(b.ts))).map(p => [
-      (p.ts || "").slice(0, 16).replace("T", " "), p.teamNumber, p.teamName || "", p.byName || "",
+      fmtTs(p.ts), p.teamNumber, p.teamName || "", p.byName || "",
       p.extraName, Number(p.amt || 0), Number(p.price || 0), p.free ? "FREE" : "", p.paid ? "PAID" : (p.free ? "" : "unpaid"), p.drawnPrize ?? ""
     ]),
     [],
@@ -2422,7 +2433,7 @@ async function exportWorkbook() {
   sheet("Prize Winners", [
     ["Prize #", "Team #", "Team", "Winning chip", "Chip bought by", "Drawn at"],
     ...Object.values(S.draws).sort((a, b) => (a.prizeNumber || 0) - (b.prizeNumber || 0)).map(d => [
-      d.prizeNumber, d.teamNumber, d.teamName || "", d.extraName || "", d.byName || "", (d.ts || "").slice(0, 16).replace("T", " ")
+      d.prizeNumber, d.teamNumber, d.teamName || "", d.extraName || "", d.byName || "", fmtTs(d.ts)
     ])
   ]);
 
