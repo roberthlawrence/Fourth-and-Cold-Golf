@@ -2859,6 +2859,7 @@ function adminDangerHtml() {
     <button class="btn btn-gold btn-block" id="exportXlsxBtn" style="margin-bottom:10px">📊 Download event workbook (.xlsx) — full record</button>
     <div class="add-row">
       <button class="btn btn-ghost" id="dlBackup">⬇ Download backup (JSON + CSV)</button>
+      <button class="btn btn-ghost" id="viewArchives">🗂 View cloud archives</button>
       <button class="btn btn-ghost" id="cloudArchive">☁ Save cloud archive</button>
     </div>
     <div class="add-row">
@@ -2888,18 +2889,85 @@ function backupCsv() {
   });
   return csv(rows);
 }
+function offerFiles(title, files) {
+  // iPhones only honor ONE programmatic download per tap — give each file its own buttons.
+  const rows = files.map((f, i) => {
+    const file = new File([f.blob], f.name, { type: f.blob.type });
+    const canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+    f._file = file;
+    return `<div class="add-row" style="margin-top:${i ? 8 : 0}px">
+      <button class="btn btn-primary" style="flex:2" data-fdl="${i}">⬇ ${esc(f.label)}</button>
+      ${canShare ? `<button class="btn btn-gold" style="flex:1" data-fsh="${i}">📤 Share</button>` : ""}
+    </div>`;
+  }).join("");
+  openModal(`<div class="modal-title">${title}</div>${rows}
+    <div class="modal-actions"><button class="btn btn-ghost btn-block" id="mCancel">Close</button></div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  document.querySelectorAll("[data-fdl]").forEach(b => b.addEventListener("click", () => {
+    const f = files[Number(b.dataset.fdl)];
+    const url = URL.createObjectURL(f.blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = f.name;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 30000);
+    toast(`${f.label} downloading…`);
+  }));
+  document.querySelectorAll("[data-fsh]").forEach(b => b.addEventListener("click", async () => {
+    const f = files[Number(b.dataset.fsh)];
+    try { await navigator.share({ files: [f._file], title: f.name }); }
+    catch (e) { if (e.name !== "AbortError") toast(e.message, true); }
+  }));
+}
+
 async function downloadBackup() {
   const stamp = nowIso().slice(0, 19).replace(/[:T]/g, "-");
-  downloadFile(JSON.stringify(buildBackup(), null, 2), `golf-backup-${stamp}.json`, "application/json");
-  downloadFile(backupCsv(), `golf-roster-${stamp}.csv`, "text/csv");
-  toast("Backup downloaded (JSON + CSV).");
+  offerFiles("📦 Backup ready", [
+    { label: "Full backup (JSON)", name: `golf-backup-${stamp}.json`,
+      blob: new Blob([JSON.stringify(buildBackup(), null, 2)], { type: "application/json" }) },
+    { label: "Roster (CSV)", name: `golf-roster-${stamp}.csv`,
+      blob: new Blob([backupCsv()], { type: "text/csv" }) }
+  ]);
 }
 async function cloudArchive() {
   try {
     await addDoc(collection(db, "archives"), { ...buildBackup(), by: S.adminEmail });
     audit("cloud_archive_saved", `by ${S.adminEmail}`);
-    toast("Cloud archive saved.");
+    toast("☁️ Archived to Firestore — tap \"View cloud archives\" to see them.");
   } catch (e) { toast(e.message, true); }
+}
+
+async function openArchives() {
+  let snaps;
+  try { snaps = await getDocs(collection(db, "archives")); }
+  catch (e) { return toast(e.message, true); }
+  const list = [];
+  snaps.forEach(d => list.push({ id: d.id, ...d.data() }));
+  list.sort((a, b) => String(b.exportedAt || "").localeCompare(String(a.exportedAt || "")));
+  if (!list.length) return toast("No cloud archives yet — hit ☁️ Archive to Firestore first.");
+  openModal(`<div class="modal-title">🗂 Cloud archives (${list.length})</div>
+    <p class="muted small">Snapshots of config, accounts, registrations, teams &amp; payments — stored in Firestore. Download one, then use Restore-from-file to roll back to it.</p>
+    <div class="slot-list">
+      ${list.map((a, i) => `<div class="shop-item"><span><b>${fmtTs(a.exportedAt) || "?"}</b><br><span class="muted small">${esc(a.by || "?")} · ${Object.keys(a.teams || {}).length} teams · ${Object.keys(a.registrations || {}).length} regs</span></span>
+        <span class="shop-right"><button class="btn btn-tiny btn-gold" data-arcdl="${i}">⬇ JSON</button><button class="btn btn-tiny btn-ghost" data-arcdel="${i}">✕</button></span></div>`).join("")}
+    </div>
+    <div class="modal-actions"><button class="btn btn-ghost btn-block" id="mCancel">Close</button></div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  document.querySelectorAll("[data-arcdl]").forEach(b => b.addEventListener("click", () => {
+    const a = list[Number(b.dataset.arcdl)];
+    const { id: _id, by: _by, ...payload } = a;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const el = document.createElement("a");
+    el.href = url; el.download = `golf-archive-${(a.exportedAt || "x").slice(0, 19).replace(/[:T]/g, "-")}.json`;
+    document.body.appendChild(el); el.click();
+    setTimeout(() => { URL.revokeObjectURL(url); el.remove(); }, 30000);
+    toast("Archive downloading…");
+  }));
+  document.querySelectorAll("[data-arcdel]").forEach(b => b.addEventListener("click", async () => {
+    const a = list[Number(b.dataset.arcdel)];
+    try { await deleteDoc(doc(db, "archives", a.id)); audit("cloud_archive_deleted", `${a.exportedAt} by ${S.adminEmail}`); toast("Archive deleted."); closeModal(); }
+    catch (e) { toast(e.message, true); }
+  }));
 }
 async function restoreFromFile(file) {
   try {
@@ -3319,6 +3387,7 @@ function wireAdmin() {
   $("payCsv")?.addEventListener("click", downloadPaymentsCsv);
   $("saveSettings")?.addEventListener("click", saveSettings);
   $("dlBackup")?.addEventListener("click", downloadBackup);
+  $("viewArchives")?.addEventListener("click", openArchives);
   $("cloudArchive")?.addEventListener("click", cloudArchive);
   $("resetAll")?.addEventListener("click", confirmReset);
   $("restoreFile")?.addEventListener("click", () => $("restoreInput").click());
