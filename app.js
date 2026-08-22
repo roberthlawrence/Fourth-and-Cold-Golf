@@ -2336,9 +2336,13 @@ async function exportWorkbook() {
   toast("Building workbook…");
   let X;
   try { X = await loadXLSX(); } catch { return toast("Couldn't load the Excel library — check connection.", true); }
+  try {
   const c = S.config || {};
   const wb = X.utils.book_new();
-  const sheet = (name, rows) => X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(rows), name);
+  const sheet = (name, rows) => {
+    try { X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(rows), name); }
+    catch (e) { throw new Error(`sheet "${name}": ${e.message}`); }
+  };
 
   // ---- Overview ----
   const teams = Object.values(S.teams).sort((a, b) => a.number - b.number);
@@ -2423,9 +2427,39 @@ async function exportWorkbook() {
   ]);
 
   const fname = (c.eventName || "fourth-and-cold-golf").toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-event-record.xlsx";
-  X.writeFile(wb, fname);
-  audit("workbook_exported", fname);
-  toast("Workbook downloaded 🎉");
+  let blob;
+  try {
+    const buf = X.write(wb, { type: "array", bookType: "xlsx" });
+    blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  } catch (e) { return toast("Workbook build failed: " + e.message, true); }
+
+  // iPhones (especially home-screen apps) silently eat programmatic downloads —
+  // hand the user explicit buttons so each tap is a fresh gesture iOS respects.
+  const file = new File([blob], fname, { type: blob.type });
+  // (everything above is inside the try — errors surface as a toast now)
+  const canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+  openModal(`<div class="modal-title">📊 Workbook ready</div>
+    <p class="small">${Object.values(S.teams).length} teams · ${Object.values(S.purchases).length} chips · ${Object.values(S.draws).length} drawings — six sheets.</p>
+    ${canShare ? `<button class="btn btn-gold btn-block" id="wbShare" style="margin-bottom:8px">📤 Share / AirDrop / Save to Files</button>` : ""}
+    <button class="btn btn-primary btn-block" id="wbDownload">⬇ Download</button>
+    <div class="modal-actions"><button class="btn btn-ghost btn-block" id="mCancel">Close</button></div>`);
+  $("mCancel").addEventListener("click", closeModal);
+  $("wbShare")?.addEventListener("click", async () => {
+    try { await navigator.share({ files: [file], title: fname }); audit("workbook_exported", fname + " (shared)"); }
+    catch (e) { if (e.name !== "AbortError") toast(e.message, true); }
+  });
+  $("wbDownload").addEventListener("click", () => {
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      audit("workbook_exported", fname);
+      toast("Downloading — check your Files app or downloads.");
+    } catch (e) { toast(e.message, true); }
+  });
+  } catch (e) { toast("Workbook error: " + e.message, true); }
 }
 
 function adminExtrasPaymentsHtml() {
